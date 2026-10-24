@@ -19,6 +19,7 @@ import { asyncHandler, formatZodError } from './helpers.js';
 
 // Precomputed dummy Argon2id hash to equalize timing when a username does not exist
 let DUMMY_HASH_PROMISE: Promise<string> | null = null;
+
 function getDummyHash(): Promise<string> {
   if (!DUMMY_HASH_PROMISE) {
     DUMMY_HASH_PROMISE = hashPassword('dummy-constant-time-guard-password');
@@ -41,7 +42,9 @@ export function createAuthRouter(
       if (!req.auth) {
         return res.json({ authenticated: false });
       }
+
       const { user, session, customer } = req.auth;
+
       return res.json({
         authenticated: true,
         csrfToken: session.csrfToken,
@@ -73,6 +76,7 @@ export function createAuthRouter(
         .trim();
 
       const ipCheck = rateLimiter.check(`ip:${ip}`);
+
       if (!ipCheck.allowed) {
         res.setHeader('Retry-After', String(ipCheck.retryAfterSeconds));
         return res.status(429).json({
@@ -82,6 +86,7 @@ export function createAuthRouter(
       }
 
       const parsed = loginInputSchema.safeParse(req.body);
+
       if (!parsed.success) {
         rateLimiter.recordFailure(`ip:${ip}`);
         return res.status(400).json(formatZodError(parsed.error));
@@ -89,6 +94,7 @@ export function createAuthRouter(
 
       const { mobile, password } = parsed.data;
       const userCheck = rateLimiter.check(`user:${mobile}`);
+
       if (!userCheck.allowed) {
         res.setHeader('Retry-After', String(userCheck.retryAfterSeconds));
         return res.status(429).json({
@@ -97,7 +103,11 @@ export function createAuthRouter(
         });
       }
 
-      const [userRow] = await db.select().from(users).where(eq(users.username, mobile)).limit(1);
+      const [userRow] = await db
+        .select()
+        .from(users)
+        .where(eq(users.username, mobile))
+        .limit(1);
 
       if (!userRow) {
         await verifyPassword(await getDummyHash(), password);
@@ -107,8 +117,12 @@ export function createAuthRouter(
       }
 
       const now = new Date();
+
       if (userRow.lockedUntil && userRow.lockedUntil > now) {
-        const remainingSec = Math.ceil((userRow.lockedUntil.getTime() - now.getTime()) / 1000);
+        const remainingSec = Math.ceil(
+          (userRow.lockedUntil.getTime() - now.getTime()) / 1000,
+        );
+
         return res.status(429).json({
           error: rateLimiter.formatLockoutMessage(remainingSec),
           code: 'ACCOUNT_LOCKED',
@@ -116,12 +130,14 @@ export function createAuthRouter(
       }
 
       const validPassword = await verifyPassword(userRow.passwordHash, password);
+
       if (!validPassword || !userRow.isActive) {
         rateLimiter.recordFailure(`ip:${ip}`);
         rateLimiter.recordFailure(`user:${mobile}`);
 
         const nextFailCount = userRow.failedLoginCount + 1;
         const shouldLock = nextFailCount >= 6;
+
         await db
           .update(users)
           .set({
@@ -132,21 +148,25 @@ export function createAuthRouter(
           .where(eq(users.id, userRow.id));
 
         logger.warn('auth.login.failed', { userId: userRow.id, ip });
+
         return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
       }
 
       // Check customer profile is active if role === 'customer'
       let customerRow: typeof customers.$inferSelect | null = null;
+
       if (userRow.role === 'customer') {
         const [cust] = await db
           .select()
           .from(customers)
           .where(eq(customers.userId, userRow.id))
           .limit(1);
+
         if (!cust || !cust.isActive) {
           logger.warn('auth.login.inactive_customer', { userId: userRow.id });
           return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
         }
+
         customerRow = cust;
       }
 
@@ -209,7 +229,9 @@ export function createAuthRouter(
       if (req.auth) {
         await db.delete(sessions).where(eq(sessions.id, req.auth.session.id));
       }
+
       res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+
       if (config.previewIframeCompat) {
         res.clearCookie(SESSION_COOKIE_NAME, {
           path: '/',
@@ -219,6 +241,7 @@ export function createAuthRouter(
           partitioned: true,
         });
       }
+
       return res.json({ ok: true });
     }),
   );
@@ -228,6 +251,7 @@ export function createAuthRouter(
     requireAuth({ allowPasswordChangeGate: true }),
     asyncHandler(async (req, res) => {
       const parsed = changePasswordInputSchema.safeParse(req.body);
+
       if (!parsed.success) {
         return res.status(400).json(formatZodError(parsed.error));
       }
@@ -236,6 +260,7 @@ export function createAuthRouter(
       const { currentPassword, newPassword } = parsed.data;
 
       const matchesCurrent = await verifyPassword(auth.user.passwordHash, currentPassword);
+
       if (!matchesCurrent) {
         return res.status(400).json({
           error: 'رمز عبور فعلی نادرست است.',
@@ -243,20 +268,8 @@ export function createAuthRouter(
         });
       }
 
-      // Disallow setting the new password equal to the user's mobile or national ID
-      const normalizedCandidate = normalizeDigits(newPassword.trim());
-      if (
-        normalizedCandidate === auth.user.username ||
-        (auth.customer?.nationalId && normalizedCandidate === auth.customer.nationalId)
-      ) {
-        return res.status(400).json({
-          error: 'رمز عبور جدید نباید با شماره همراه یا کد ملی شما یکسان باشد.',
-          fieldErrors: {
-            newPassword: 'رمز عبور جدید نباید با شماره همراه یا کد ملی شما یکسان باشد.',
-          },
-        });
-      }
-
+      // رمز جدید می‌تواند با شماره همراه یا کد ملی یکسان باشد.
+      // بررسی حداقل طول و تطابق تکرار رمز در changePasswordInputSchema انجام می‌شود.
       const newHash = await hashPassword(newPassword);
       const now = new Date();
 
