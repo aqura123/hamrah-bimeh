@@ -105,7 +105,7 @@ export function ForceChangePasswordPage() {
             <FormField
               label="رمز عبور جدید"
               required
-              hint="حداقل ۸ کاراکتر شامل حروف و اعداد؛ نباید با شماره همراه یا کد ملی شما یکسان باشد."
+              hint="رمز عبور باید بیش از ۸ کاراکتر باشد. رمز عددی هم مجاز است؛ برای امنیت بیشتر، استفاده از حروف و نمادها توصیه می‌شود."
               error={fieldErrors.newPassword}
             >
               {(props) => (
