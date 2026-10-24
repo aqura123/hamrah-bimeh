@@ -33,7 +33,6 @@ async function main() {
 
   const conn = await createDatabaseConnection(config.databaseUrl);
   try {
-    await conn.migrate();
     const passwordHash = await hashPassword(rawPassword);
 
     const [existing] = await conn.db
