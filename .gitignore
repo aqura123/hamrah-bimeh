@@ -1,0 +1,20 @@
+# Dependencies & build artifacts
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+.cache/
+
+# Environment variables (never commit real secrets)
+.env
+.env.*
+!.env.example
+
+# Local runtime storage (database & private uploads in development)
+storage/
+
+# Logs & OS files
+*.log
+npm-debug.log*
+.DS_Store

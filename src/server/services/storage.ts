@@ -1,0 +1,271 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+export interface StoredFileMetadata {
+  storageKey: string;
+  displayFilename: string;
+  detectedMimeType: string;
+  byteSize: number;
+  sha256Checksum: string;
+  scanState: 'not_configured' | 'clean';
+}
+
+export interface FileStorageProvider {
+  put(buffer: Buffer): Promise<{ storageKey: string; sha256Checksum: string }>;
+  read(storageKey: string): Promise<Buffer>;
+  remove(storageKey: string): Promise<void>;
+  exists(storageKey: string): Promise<boolean>;
+}
+
+const SAFE_STORAGE_KEY_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.bin$/;
+
+export class LocalPrivateFileStorage implements FileStorageProvider {
+  private readonly rootDir: string;
+
+  constructor(rootDir: string) {
+    this.rootDir = path.resolve(rootDir);
+  }
+
+  private resolveSafePath(storageKey: string): string {
+    if (!SAFE_STORAGE_KEY_REGEX.test(storageKey)) {
+      throw new Error('Invalid opaque storage key');
+    }
+    const target = path.resolve(this.rootDir, storageKey);
+    const relative = path.relative(this.rootDir, target);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Storage path traversal blocked');
+    }
+    return target;
+  }
+
+  async put(buffer: Buffer): Promise<{ storageKey: string; sha256Checksum: string }> {
+    await fs.mkdir(this.rootDir, { recursive: true, mode: 0o700 });
+    const storageKey = `${crypto.randomUUID()}.bin`;
+    const filePath = this.resolveSafePath(storageKey);
+    const sha256Checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+    await fs.writeFile(filePath, buffer, { mode: 0o600 });
+    return { storageKey, sha256Checksum };
+  }
+
+  async read(storageKey: string): Promise<Buffer> {
+    const filePath = this.resolveSafePath(storageKey);
+    return fs.readFile(filePath);
+  }
+
+  async remove(storageKey: string): Promise<void> {
+    const filePath = this.resolveSafePath(storageKey);
+    await fs.unlink(filePath).catch(() => undefined);
+  }
+
+  async exists(storageKey: string): Promise<boolean> {
+    try {
+      const filePath = this.resolveSafePath(storageKey);
+      await fs.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+const BLOCKED_EXTENSIONS = new Set([
+  '.exe',
+  '.dll',
+  '.bat',
+  '.cmd',
+  '.com',
+  '.scr',
+  '.msi',
+  '.sh',
+  '.bash',
+  '.ps1',
+  '.vbs',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.ts',
+  '.html',
+  '.htm',
+  '.xhtml',
+  '.svg',
+  '.xml',
+  '.php',
+  '.phtml',
+  '.py',
+  '.rb',
+  '.pl',
+  '.jar',
+  '.war',
+  '.apk',
+  '.elf',
+  '.app',
+]);
+
+const ALLOWED_EXTENSION_FOR_MIME: Record<string, readonly string[]> = {
+  'application/pdf': ['.pdf'],
+  'image/jpeg': ['.jpg', '.jpeg'],
+  'image/png': ['.png'],
+  'image/webp': ['.webp'],
+};
+
+/**
+ * Inspects actual file magic bytes on the server rather than trusting browser-supplied Content-Type.
+ */
+export function detectMimeTypeFromMagicBytes(buffer: Buffer): string | null {
+  if (buffer.byteLength < 8) {
+    return null;
+  }
+
+  // Block common executable / script headers immediately
+  // Windows MZ, Linux ELF, Shebang #!
+  if (
+    (buffer[0] === 0x4d && buffer[1] === 0x5a) ||
+    (buffer[0] === 0x7f && buffer[1] === 0x45 && buffer[2] === 0x4c && buffer[3] === 0x46) ||
+    (buffer[0] === 0x23 && buffer[1] === 0x21)
+  ) {
+    return null;
+  }
+
+  // PDF: %PDF-
+  if (
+    buffer[0] === 0x25 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x44 &&
+    buffer[3] === 0x46 &&
+    buffer[4] === 0x2d
+  ) {
+    return 'application/pdf';
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+
+  // WEBP: RIFF....WEBP
+  if (
+    buffer.byteLength >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+
+  return null;
+}
+
+/**
+ * Strips path components, null bytes, control characters, and BiDi override characters
+ * from original filenames so they are safe as escaped display metadata.
+ */
+export function sanitizeDisplayFilename(rawName: string, fallbackExt = '.pdf'): string {
+  // Normalize backslashes & strip any directory traversal segments
+  const normalizedSlashes = rawName.replace(/\\/g, '/');
+  const base = path.posix.basename(normalizedSlashes);
+  // Strip control chars, null bytes, quotes, BiDi overrides, and dangerous path symbols
+  const withoutControls = Array.from(base)
+    .filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join('');
+  const cleaned = withoutControls
+    .replace(/[\u202a-\u202e\u2066-\u2069"<>|:*?]/g, '')
+    .replace(/\.{2,}/g, '.')
+    .trim();
+
+  if (!cleaned || cleaned === '.' || cleaned === '..') {
+    return `document${fallbackExt}`;
+  }
+  return cleaned.length > 140 ? cleaned.slice(-140) : cleaned;
+}
+
+export class FileValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FileValidationError';
+  }
+}
+
+export async function validateAndStorePrivateFile(params: {
+  storage: FileStorageProvider;
+  originalName: string;
+  buffer: Buffer;
+  maxUploadBytes: number;
+  allowedMimes: readonly string[];
+  antivirusMode: 'disabled';
+}): Promise<StoredFileMetadata> {
+  const { storage, originalName, buffer, maxUploadBytes, allowedMimes, antivirusMode } = params;
+
+  if (!buffer || buffer.byteLength === 0) {
+    throw new FileValidationError('فایل انتخاب‌شده خالی است.');
+  }
+  if (buffer.byteLength > maxUploadBytes) {
+    const maxMb = Math.round(maxUploadBytes / (1024 * 1024));
+    throw new FileValidationError(`حجم فایل بیش از حد مجاز (${maxMb} مگابایت) است.`);
+  }
+
+  // Check all extensions in multi-dot filenames (e.g. invoice.pdf.exe)
+  const lowerName = originalName.toLowerCase();
+  const segments = path.posix.basename(lowerName.replace(/\\/g, '/')).split('.').slice(1);
+  for (const seg of segments) {
+    if (BLOCKED_EXTENSIONS.has(`.${seg}`)) {
+      throw new FileValidationError('فرمت فایل به دلایل امنیتی مجاز نیست.');
+    }
+  }
+
+  const detectedMimeType = detectMimeTypeFromMagicBytes(buffer);
+  if (!detectedMimeType || !allowedMimes.includes(detectedMimeType)) {
+    throw new FileValidationError(
+      'نوع فایل پشتیبانی نمی‌شود. فقط فایل‌های PDF و تصاویر معتبر (JPG، PNG، WebP) مجاز هستند.',
+    );
+  }
+
+  const allowedExts = ALLOWED_EXTENSION_FOR_MIME[detectedMimeType] ?? [];
+  const actualExt = path.extname(lowerName);
+  if (actualExt && allowedExts.length > 0 && !allowedExts.includes(actualExt)) {
+    throw new FileValidationError(
+      'پسوند فایل با محتوای واقعی آن همخوانی ندارد. لطفاً فایل معتبر بارگذاری کنید.',
+    );
+  }
+
+  const fallbackExt = allowedExts[0] ?? '.bin';
+  let displayFilename = sanitizeDisplayFilename(originalName, fallbackExt);
+  if (!path.extname(displayFilename)) {
+    displayFilename = `${displayFilename}${fallbackExt}`;
+  }
+
+  const { storageKey, sha256Checksum } = await storage.put(buffer);
+
+  return {
+    storageKey,
+    displayFilename,
+    detectedMimeType,
+    byteSize: buffer.byteLength,
+    sha256Checksum,
+    // Honest reporting: only report 'clean' if an actual scanner ran; otherwise 'not_configured'
+    scanState: 'not_configured',
+  };
+}

@@ -1,0 +1,101 @@
+@import 'vazirmatn/Vazirmatn-font-face.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Hamrah Bimeh Official Brand Kit Tokens */
+  --color-brand-navy: #123b5d;
+  --color-brand-navy-dark: #0c2942;
+  --color-brand-blue: #216b8c;
+  --color-brand-turquoise: #55c7b4;
+  --color-brand-turquoise-soft: #e6f6f3;
+
+  --color-bg-app: #f4f7fa;
+  --color-bg-surface: #ffffff;
+  --color-bg-subtle: #edf2f7;
+
+  --color-text-main: #263746;
+  --color-text-muted: #516373;
+  --color-border-main: #d8e0e8;
+
+  /* Accessible High-Contrast Semantic Status Tokens */
+  --color-status-info: #165273;
+  --color-status-info-bg: #e7f2f8;
+  --color-status-warning: #7c4a03;
+  --color-status-warning-bg: #fef5e7;
+  --color-status-success: #0f5c4d;
+  --color-status-success-bg: #e5f6f2;
+  --color-status-danger: #991b1b;
+  --color-status-danger-bg: #fef2f2;
+  --color-status-neutral: #3b4d5e;
+  --color-status-neutral-bg: #eef2f6;
+
+  /* Radii & Restrained Shadows (8–12px per Brand Kit) */
+  --radius-control: 0.5rem; /* 8px */
+  --radius-card: 0.75rem; /* 12px */
+  --shadow-card: 0 1px 3px 0 rgba(18, 59, 93, 0.06), 0 1px 2px -1px rgba(18, 59, 93, 0.04);
+  --shadow-elevated:
+    0 10px 24px -6px rgba(18, 59, 93, 0.12), 0 4px 10px -4px rgba(18, 59, 93, 0.06);
+}
+
+@layer base {
+  html {
+    direction: rtl;
+    font-family: 'Vazirmatn', 'Tahoma', 'Iranian Sans', 'Noto Sans Arabic', 'Segoe UI', sans-serif;
+    background-color: var(--color-bg-app);
+    color: var(--color-text-main);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    min-height: 100vh;
+    overflow-x: hidden;
+    line-height: 1.75;
+  }
+
+  /* Clear visible keyboard focus ring across all interactive elements */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-blue);
+    outline-offset: 2px;
+  }
+}
+
+.ltr-code {
+  direction: ltr;
+  unicode-bidi: embed;
+  display: inline-block;
+}
+
+
+@layer base {
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 3px solid var(--color-brand-blue);
+    outline-offset: 3px;
+  }
+
+  [id] {
+    scroll-margin-top: 6rem;
+  }
+
+  ::selection {
+    background: var(--color-brand-navy);
+    color: #fff;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
