@@ -13,7 +13,10 @@ export interface StoredFileMetadata {
 }
 
 export interface FileStorageProvider {
-  put(buffer: Buffer): Promise<{ storageKey: string; sha256Checksum: string }>;
+  put(
+    buffer: Buffer,
+    contentType: string,
+  ): Promise<{ storageKey: string; sha256Checksum: string }>;
   read(storageKey: string): Promise<Buffer>;
   remove(storageKey: string): Promise<void>;
   exists(storageKey: string): Promise<boolean>;
@@ -41,11 +44,17 @@ export class LocalPrivateFileStorage implements FileStorageProvider {
     return target;
   }
 
-  async put(buffer: Buffer): Promise<{ storageKey: string; sha256Checksum: string }> {
+  async put(
+    buffer: Buffer,
+    _contentType: string,
+  ): Promise<{ storageKey: string; sha256Checksum: string }> {
     await fs.mkdir(this.rootDir, { recursive: true, mode: 0o700 });
     const storageKey = `${crypto.randomUUID()}.bin`;
     const filePath = this.resolveSafePath(storageKey);
-    const sha256Checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+    const sha256Checksum = crypto
+      .createHash('sha256')
+      .update(buffer)
+      .digest('hex');
     await fs.writeFile(filePath, buffer, { mode: 0o600 });
     return { storageKey, sha256Checksum };
   }
@@ -123,7 +132,10 @@ export function detectMimeTypeFromMagicBytes(buffer: Buffer): string | null {
   // Windows MZ, Linux ELF, Shebang #!
   if (
     (buffer[0] === 0x4d && buffer[1] === 0x5a) ||
-    (buffer[0] === 0x7f && buffer[1] === 0x45 && buffer[2] === 0x4c && buffer[3] === 0x46) ||
+    (buffer[0] === 0x7f &&
+      buffer[1] === 0x45 &&
+      buffer[2] === 0x4c &&
+      buffer[3] === 0x46) ||
     (buffer[0] === 0x23 && buffer[1] === 0x21)
   ) {
     return null;
@@ -178,14 +190,15 @@ export function detectMimeTypeFromMagicBytes(buffer: Buffer): string | null {
 }
 
 /**
- * Strips path components, null bytes, control characters, and BiDi override characters
- * from original filenames so they are safe as escaped display metadata.
+ * Strips path components, control characters, and BiDi override characters
+ * from original filenames so they are safe as display metadata.
  */
-export function sanitizeDisplayFilename(rawName: string, fallbackExt = '.pdf'): string {
-  // Normalize backslashes & strip any directory traversal segments
+export function sanitizeDisplayFilename(
+  rawName: string,
+  fallbackExt = '.pdf',
+): string {
   const normalizedSlashes = rawName.replace(/\\/g, '/');
   const base = path.posix.basename(normalizedSlashes);
-  // Strip control chars, null bytes, quotes, BiDi overrides, and dangerous path symbols
   const withoutControls = Array.from(base)
     .filter((ch) => {
       const code = ch.charCodeAt(0);
@@ -218,22 +231,29 @@ export async function validateAndStorePrivateFile(params: {
   allowedMimes: readonly string[];
   antivirusMode: 'disabled';
 }): Promise<StoredFileMetadata> {
-  const { storage, originalName, buffer, maxUploadBytes, allowedMimes, antivirusMode } = params;
+  const { storage, originalName, buffer, maxUploadBytes, allowedMimes } = params;
 
   if (!buffer || buffer.byteLength === 0) {
     throw new FileValidationError('فایل انتخاب‌شده خالی است.');
   }
   if (buffer.byteLength > maxUploadBytes) {
     const maxMb = Math.round(maxUploadBytes / (1024 * 1024));
-    throw new FileValidationError(`حجم فایل بیش از حد مجاز (${maxMb} مگابایت) است.`);
+    throw new FileValidationError(
+      `حجم فایل بیش از حد مجاز (${maxMb} مگابایت) است.`,
+    );
   }
 
-  // Check all extensions in multi-dot filenames (e.g. invoice.pdf.exe)
   const lowerName = originalName.toLowerCase();
-  const segments = path.posix.basename(lowerName.replace(/\\/g, '/')).split('.').slice(1);
+  const segments = path.posix
+    .basename(lowerName.replace(/\\/g, '/'))
+    .split('.')
+    .slice(1);
+
   for (const seg of segments) {
     if (BLOCKED_EXTENSIONS.has(`.${seg}`)) {
-      throw new FileValidationError('فرمت فایل به دلایل امنیتی مجاز نیست.');
+      throw new FileValidationError(
+        'فرمت فایل به دلایل امنیتی مجاز نیست.',
+      );
     }
   }
 
@@ -258,7 +278,11 @@ export async function validateAndStorePrivateFile(params: {
     displayFilename = `${displayFilename}${fallbackExt}`;
   }
 
-  const { storageKey, sha256Checksum } = await storage.put(buffer);
+  // Pass the server-detected MIME type to storage, not the browser-supplied value.
+  const { storageKey, sha256Checksum } = await storage.put(
+    buffer,
+    detectedMimeType,
+  );
 
   return {
     storageKey,
@@ -266,11 +290,9 @@ export async function validateAndStorePrivateFile(params: {
     detectedMimeType,
     byteSize: buffer.byteLength,
     sha256Checksum,
-    // Honest reporting: only report 'clean' if an actual scanner ran; otherwise 'not_configured'
     scanState: 'not_configured',
   };
 }
-
 
 /**
  * Stores private insurance documents in Supabase Storage.
@@ -308,6 +330,7 @@ export class SupabasePrivateFileStorage implements FileStorageProvider {
 
   async put(
     buffer: Buffer,
+    contentType: string,
   ): Promise<{ storageKey: string; sha256Checksum: string }> {
     const storageKey = `${crypto.randomUUID()}.bin`;
     const sha256Checksum = crypto
@@ -318,7 +341,7 @@ export class SupabasePrivateFileStorage implements FileStorageProvider {
     const { error } = await this.client.storage
       .from(this.bucket)
       .upload(storageKey, buffer, {
-        contentType: 'application/octet-stream',
+        contentType,
         upsert: false,
       });
 
@@ -369,4 +392,3 @@ export class SupabasePrivateFileStorage implements FileStorageProvider {
     return (data ?? []).some((file) => file.name === storageKey);
   }
 }
-
