@@ -5,6 +5,7 @@ import { toPersianDigits } from '../../shared/jalali.js';
 export function createMemoryUpload(maxUploadBytes: number, maxFiles = 10) {
   return multer({
     storage: multer.memoryStorage(),
+    defParamCharset: 'utf8',
     limits: {
       fileSize: maxUploadBytes,
       files: maxFiles,
