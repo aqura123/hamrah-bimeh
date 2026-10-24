@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createClient } from '@supabase/supabase-js';
 
 export interface StoredFileMetadata {
   storageKey: string;
@@ -269,3 +270,103 @@ export async function validateAndStorePrivateFile(params: {
     scanState: 'not_configured',
   };
 }
+
+
+/**
+ * Stores private insurance documents in Supabase Storage.
+ * The bucket must remain private.
+ */
+export class SupabasePrivateFileStorage implements FileStorageProvider {
+  private readonly client: ReturnType<typeof createClient>;
+  private readonly bucket: string;
+
+  constructor(
+    supabaseUrl = process.env.SUPABASE_URL,
+    secretKey = process.env.SUPABASE_SECRET_KEY,
+    bucket = 'private-insurance-files',
+  ) {
+    if (!supabaseUrl || !secretKey) {
+      throw new Error('Supabase Storage environment variables are missing.');
+    }
+
+    this.client = createClient(supabaseUrl, secretKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+
+    this.bucket = bucket;
+  }
+
+  private validateKey(storageKey: string): void {
+    if (!SAFE_STORAGE_KEY_REGEX.test(storageKey)) {
+      throw new Error('Invalid opaque storage key');
+    }
+  }
+
+  async put(
+    buffer: Buffer,
+  ): Promise<{ storageKey: string; sha256Checksum: string }> {
+    const storageKey = `${crypto.randomUUID()}.bin`;
+    const sha256Checksum = crypto
+      .createHash('sha256')
+      .update(buffer)
+      .digest('hex');
+
+    const { error } = await this.client.storage
+      .from(this.bucket)
+      .upload(storageKey, buffer, {
+        contentType: 'application/octet-stream',
+        upsert: false,
+      });
+
+    if (error) {
+      throw new Error(`Supabase Storage upload failed: ${error.message}`);
+    }
+
+    return { storageKey, sha256Checksum };
+  }
+
+  async read(storageKey: string): Promise<Buffer> {
+    this.validateKey(storageKey);
+
+    const { data, error } = await this.client.storage
+      .from(this.bucket)
+      .download(storageKey);
+
+    if (error || !data) {
+      throw new Error('Unable to read private file from Supabase Storage.');
+    }
+
+    return Buffer.from(await data.arrayBuffer());
+  }
+
+  async remove(storageKey: string): Promise<void> {
+    this.validateKey(storageKey);
+
+    const { error } = await this.client.storage
+      .from(this.bucket)
+      .remove([storageKey]);
+
+    if (error) {
+      throw new Error('Unable to remove private file from Supabase Storage.');
+    }
+  }
+
+  async exists(storageKey: string): Promise<boolean> {
+    this.validateKey(storageKey);
+
+    const { data, error } = await this.client.storage
+      .from(this.bucket)
+      .list('', { search: storageKey, limit: 1 });
+
+    if (error) {
+      throw new Error('Unable to check private file in Supabase Storage.');
+    }
+
+    return (data ?? []).some((file) => file.name === storageKey);
+  }
+}
+
