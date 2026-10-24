@@ -7,7 +7,7 @@ import { loadConfig } from './config.js';
 import { createDatabaseConnection } from './db/client.js';
 import { seedDemoDatabase } from './db/seed.js';
 import { logger } from './logger.js';
-import { LocalPrivateFileStorage } from './services/storage.js';
+import { LocalPrivateFileStorage, SupabasePrivateFileStorage,} from './services/storage.js';
 
 function injectPageMeta(html: string, pathname: string): string {
   const meta = getRouteMetadataFa(pathname);
@@ -26,7 +26,7 @@ async function startServer() {
   const dbConn = await createDatabaseConnection(config.databaseUrl);
   await dbConn.migrate();
 
-  const storage = new LocalPrivateFileStorage(config.privateStorageDir);
+  const storage = config.nodeEnv === 'production' ? new SupabasePrivateFileStorage() : new LocalPrivateFileStorage(config.privateStorageDir);
   if (config.nodeEnv === 'development') {
     await seedDemoDatabase(dbConn.db, config, storage);
   }
