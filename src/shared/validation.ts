@@ -118,15 +118,15 @@ export const changePasswordInputSchema = z
     currentPassword: z
       .string({ required_error: 'رمز عبور فعلی الزامی است.' })
       .min(1, 'رمز عبور فعلی الزامی است.')
-      .transform((v) => normalizeDigits(v)),
+      .transform((v) => normalizeDigits(stripInvisibleBidiMarks(v)).trim()),
     newPassword: z
       .string({ required_error: 'رمز عبور جدید الزامی است.' })
+      .transform((v) => normalizeDigits(stripInvisibleBidiMarks(v)).trim())
       .min(8, 'رمز عبور جدید باید حداقل ۸ کاراکتر باشد.')
-      .max(128, 'رمز عبور جدید بیش از حد طولانی است.')
-      .refine((v) => /[A-Za-zآ-ی]/.test(v) && /\d/.test(normalizeDigits(v)), {
-        message: 'رمز عبور جدید باید ترکیبی از حروف و اعداد باشد.',
-      }),
-    confirmPassword: z.string({ required_error: 'تکرار رمز عبور جدید الزامی است.' }),
+      .max(128, 'رمز عبور جدید بیش از حد طولانی است.'),
+    confirmPassword: z
+      .string({ required_error: 'تکرار رمز عبور جدید الزامی است.' })
+      .transform((v) => normalizeDigits(stripInvisibleBidiMarks(v)).trim()),
   })
   .refine((data) => data.newPassword === data.confirmPassword, {
     path: ['confirmPassword'],
