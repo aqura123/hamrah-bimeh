@@ -19,22 +19,30 @@ async function main() {
   const config = loadConfig();
   const rawMobile = process.env.BOOTSTRAP_ADMIN_MOBILE ?? '';
   const rawPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD ?? '';
-  const displayName = (process.env.BOOTSTRAP_ADMIN_NAME ?? 'مدیر دفتر همراه بیمه').trim();
+  const displayName = (
+    process.env.BOOTSTRAP_ADMIN_NAME ?? 'مدیر دفتر همراه بیمه'
+  ).trim();
 
   const mobile = normalizeIranianMobile(rawMobile);
+
   if (!mobile) {
-    throw new Error('BOOTSTRAP_ADMIN_MOBILE must be a valid Iranian mobile number (09XXXXXXXXX).');
+    throw new Error(
+      'BOOTSTRAP_ADMIN_MOBILE must be a valid Iranian mobile number (09XXXXXXXXX).',
+    );
   }
-  if (rawPassword.length < 10 || FORBIDDEN_BOOTSTRAP_PASSWORDS.has(rawPassword)) {
+
+  if (
+    rawPassword.length < 10 ||
+    FORBIDDEN_BOOTSTRAP_PASSWORDS.has(rawPassword)
+  ) {
     throw new Error(
       'BOOTSTRAP_ADMIN_PASSWORD must be at least 10 characters and not a placeholder value.',
     );
   }
 
   const conn = await createDatabaseConnection(config.databaseUrl);
-  try {
-    const passwordHash = await hashPassword(rawPassword);
 
+  try {
     const [existing] = await conn.db
       .select()
       .from(users)
@@ -42,43 +50,41 @@ async function main() {
       .limit(1);
 
     if (existing) {
-      await conn.db
-        .update(users)
-        .set({
-          displayName,
-          role: 'office_admin',
-          passwordHash,
-          forcePasswordChange: false,
-          isActive: true,
-          updatedAt: new Date(),
-        })
-        .where(eq(users.id, existing.id));
-      logger.info('bootstrap.admin.updated', { username: mobile });
-    } else {
-      const [created] = await conn.db
-        .insert(users)
-        .values({
-          username: mobile,
-          displayName,
-          role: 'office_admin',
-          passwordHash,
-          forcePasswordChange: false,
-          initialPasswordMode: 'manual_bootstrap',
-          isActive: true,
-        })
-        .returning();
-
-      await recordAuditEvent(conn.db, {
-        actorUserId: created!.id,
-        actorRole: 'system',
-        entityType: 'user',
-        entityId: created!.id,
-        eventType: 'user.bootstrap_admin_created',
-        customerVisible: false,
-        summaryFa: 'حساب مدیر دفتر از طریق فرآیند راه‌اندازی امن ایجاد شد.',
-      });
-      logger.info('bootstrap.admin.created', { username: mobile });
+      throw new Error(
+        'An account with this mobile number already exists. No changes were made.',
+      );
     }
+
+    const passwordHash = await hashPassword(rawPassword);
+
+    const [created] = await conn.db
+      .insert(users)
+      .values({
+        username: mobile,
+        displayName,
+        role: 'office_admin',
+        passwordHash,
+        forcePasswordChange: false,
+        initialPasswordMode: 'manual_bootstrap',
+        isActive: true,
+      })
+      .returning();
+
+    if (!created) {
+      throw new Error('Admin account creation failed.');
+    }
+
+    await recordAuditEvent(conn.db, {
+      actorUserId: created.id,
+      actorRole: 'system',
+      entityType: 'user',
+      entityId: created.id,
+      eventType: 'user.bootstrap_admin_created',
+      customerVisible: false,
+      summaryFa: 'حساب مدیر دفتر از طریق فرآیند راه‌اندازی امن ایجاد شد.',
+    });
+
+    logger.info('bootstrap.admin.created', { username: mobile });
   } finally {
     await conn.close();
   }
