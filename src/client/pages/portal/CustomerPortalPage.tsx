@@ -252,6 +252,15 @@ export function CustomerPortalPage() {
                                     publicConfig.businessTimezone,
                                   )}{' '}
                                   · کد: <span className="ltr-code">{reqItem.referenceCode}</span>
+                                  {reqItem.finalAmount !== null && (
+                                    <>
+                                      {' '}
+                                      · مبلغ:{' '}
+                                      <strong className="text-brand-text">
+                                        {formatMoney(reqItem.finalAmount, reqItem.currencyUnit)}
+                                      </strong>
+                                    </>
+                                  )}
                                 </div>
                               </div>
                               <div className="flex flex-wrap items-center gap-1.5">
