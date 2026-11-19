@@ -1,5 +1,5 @@
 
-name: Database Migrations
+name: Database Migrations - Diagnostics
 
 on:
   workflow_dispatch:
@@ -12,10 +12,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  migrate:
-    name: Baseline and migrate PostgreSQL
+  diagnose:
+    name: Diagnose PostgreSQL and Migration Baseline
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -30,422 +30,173 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: Verify legacy schema and register 0000 baseline
+      - name: Diagnose database connection and schema
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           node --input-type=module <<'NODE'
           import pg from 'pg';
-          import { readFile } from 'node:fs/promises';
-          import { createHash } from 'node:crypto';
 
           const databaseUrl = process.env.DATABASE_URL;
 
-          if (!databaseUrl || !/^postgres(?:ql)?:\/\//i.test(databaseUrl)) {
-            throw new Error('A valid DATABASE_URL secret is required.');
-          }
-
-          const journal = JSON.parse(
-            await readFile('drizzle/meta/_journal.json', 'utf8')
-          );
-
-          const expectedTags = [
-            '0000_handy_talkback',
-            '0001_sloppy_red_shift',
-            '0002_grey_redwing',
-            '0003_breezy_grandmaster',
-            '0004_wide_newton_destine'
-          ];
-
           if (
-            JSON.stringify(journal.entries.map(e => e.tag)) !==
-            JSON.stringify(expectedTags)
+            !databaseUrl ||
+            !/^postgres(?:ql)?:\/\//i.test(databaseUrl)
           ) {
-            throw new Error('Unexpected migration journal. No changes made.');
+            throw new Error('DATABASE_URL is missing or invalid.');
           }
-
-          const migrations = [];
-
-          for (const entry of journal.entries) {
-            const content = await readFile(`drizzle/${entry.tag}.sql`);
-            migrations.push({
-              tag: entry.tag,
-              when: entry.when,
-              hash: createHash('sha256').update(content).digest('hex')
-            });
-          }
-
-          const baseTables = [
-            'audit_events',
-            'customers',
-            'drivers',
-            'insured_employees',
-            'notifications',
-            'request_employee_submissions',
-            'request_files',
-            'request_messages',
-            'requests',
-            'sessions',
-            'users',
-            'workshops'
-          ];
-
-          const expectedEnums = {
-            request_status: [
-              'registered',
-              'office_reviewing',
-              'needs_customer_info',
-              'in_progress',
-              'completed',
-              'rejected',
-              'cancelled'
-            ],
-            request_type: ['driver', 'workshop'],
-            user_role: ['customer', 'office_admin']
-          };
-
-          const requiredChecks = [
-            'requests_final_amount_chk',
-            'requests_jalali_month_chk',
-            'requests_profile_type_chk'
-          ];
 
           const pool = new pg.Pool({
             connectionString: databaseUrl,
-            max: 1
+            max: 1,
+            connectionTimeoutMillis: 10000
           });
 
-          const client = await pool.connect();
-
-          async function verifyLegacySchema() {
-            const tables = await client.query(
-              `SELECT table_name
-               FROM information_schema.tables
-               WHERE table_schema = 'public'
-                 AND table_type = 'BASE TABLE'
-                 AND table_name = ANY($1::text[])`,
-              [baseTables]
-            );
-
-            const foundTables = new Set(
-              tables.rows.map(row => row.table_name)
-            );
-
-            const missingTables = baseTables.filter(
-              name => !foundTables.has(name)
-            );
-
-            if (missingTables.length) {
-              throw new Error(
-                `Baseline blocked: missing tables: ${missingTables.join(', ')}`
-              );
-            }
-
-            const checks = await client.query(
-              `SELECT conname
-               FROM pg_constraint
-               WHERE conrelid = 'public.requests'::regclass
-                 AND contype = 'c'`
-            );
-
-            const foundChecks = new Set(
-              checks.rows.map(row => row.conname)
-            );
-
-            const missingChecks = requiredChecks.filter(
-              name => !foundChecks.has(name)
-            );
-
-            if (missingChecks.length) {
-              throw new Error(
-                `Baseline blocked: missing checks: ${missingChecks.join(', ')}`
-              );
-            }
-
-            const enums = await client.query(
-              `SELECT t.typname,
-                      array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
-               FROM pg_type t
-               JOIN pg_enum e ON e.enumtypid = t.oid
-               JOIN pg_namespace n ON n.oid = t.typnamespace
-               WHERE n.nspname = 'public'
-                 AND t.typname = ANY($1::text[])
-               GROUP BY t.typname`,
-              [Object.keys(expectedEnums)]
-            );
-
-            for (const [name, expected] of Object.entries(expectedEnums)) {
-              const actual = enums.rows.find(row => row.typname === name);
-
-              if (
-                !actual ||
-                JSON.stringify(actual.labels) !== JSON.stringify(expected)
-              ) {
-                throw new Error(`Baseline blocked: enum mismatch: ${name}`);
-              }
-            }
-
-            const features = await client.query(`
-              SELECT
-                to_regclass('public.customer_cards') IS NULL
-                  AS no_customer_cards,
-
-                to_regclass('public.customer_mobiles') IS NULL
-                  AS no_customer_mobiles,
-
-                NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'requests'
-                    AND column_name IN ('card_id', 'mobile_id')
-                ) AS no_request_card_refs,
-
-                NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND (
-                      (table_name = 'drivers'
-                       AND column_name = 'portal_password_encrypted')
-                      OR
-                      (table_name = 'workshops'
-                       AND column_name = 'portal_password_encrypted')
-                    )
-                ) AS no_portal_password_columns,
-
-                NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'requests'
-                    AND column_name = 'payment_card_number'
-                ) AS no_payment_card_column,
-
-                NOT EXISTS (
-                  SELECT 1
-                  FROM pg_type t
-                  JOIN pg_enum e ON e.enumtypid = t.oid
-                  JOIN pg_namespace n ON n.oid = t.typnamespace
-                  WHERE n.nspname = 'public'
-                    AND t.typname = 'request_status'
-                    AND e.enumlabel = 'awaiting_payment'
-                ) AS no_awaiting_payment
-            `);
-
-            const state = features.rows[0];
-
-            const blocked = Object.entries(state)
-              .filter(([, value]) => value !== true)
-              .map(([name]) => name);
-
-            if (blocked.length) {
-              throw new Error(
-                `Baseline blocked: new schema objects already exist: ${blocked.join(', ')}`
-              );
-            }
-          }
-
           try {
-            await client.query('BEGIN');
+            const client = await pool.connect();
 
-            const relation = await client.query(
-              `SELECT to_regclass('drizzle.__drizzle_migrations') AS relation`
-            );
+            try {
+              console.log('\n========== DATABASE IDENTITY ==========\n');
 
-            if (!relation.rows[0].relation) {
-              await verifyLegacySchema();
-
-              await client.query(
-                'CREATE SCHEMA IF NOT EXISTS drizzle'
-              );
-
-              await client.query(`
-                CREATE TABLE drizzle.__drizzle_migrations (
-                  id SERIAL PRIMARY KEY,
-                  hash text NOT NULL,
-                  created_at bigint
-                )
+              const identity = await client.query(`
+                SELECT
+                  current_database() AS database_name,
+                  current_schema() AS current_schema,
+                  current_setting('server_version') AS server_version,
+                  inet_server_addr()::text AS server_ip
               `);
 
-              await client.query(
-                `INSERT INTO drizzle.__drizzle_migrations
-                   (hash, created_at)
-                 VALUES ($1, $2)`,
-                [migrations[0].hash, migrations[0].when]
+              console.log(
+                JSON.stringify(identity.rows[0], null, 2)
               );
 
-              console.log('Existing 0000 schema registered as baseline.');
-            } else {
-              const history = await client.query(`
-                SELECT hash, created_at::text AS created_at
-                FROM drizzle.__drizzle_migrations
-                ORDER BY created_at ASC, id ASC
+              console.log('\n========== ENUM DIAGNOSTICS ==========\n');
+
+              const enumResult = await client.query(`
+                SELECT
+                  t.typname,
+                  n.nspname,
+                  array_agg(
+                    e.enumlabel ORDER BY e.enumsortorder
+                  ) AS labels
+                FROM pg_type t
+                JOIN pg_enum e ON e.enumtypid = t.oid
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = 'public'
+                  AND t.typname IN (
+                    'request_status',
+                    'request_type',
+                    'user_role'
+                  )
+                GROUP BY t.typname, n.nspname
+                ORDER BY t.typname
               `);
 
-              if (history.rows.length === 0) {
-                await verifyLegacySchema();
+              const expectedEnums = {
+                request_status: [
+                  'registered',
+                  'office_reviewing',
+                  'needs_customer_info',
+                  'in_progress',
+                  'completed',
+                  'rejected',
+                  'cancelled'
+                ],
+                request_type: [
+                  'driver',
+                  'workshop'
+                ],
+                user_role: [
+                  'customer',
+                  'office_admin'
+                ]
+              };
 
-                await client.query(
-                  `INSERT INTO drizzle.__drizzle_migrations
-                     (hash, created_at)
-                   VALUES ($1, $2)`,
-                  [migrations[0].hash, migrations[0].when]
+              for (const [name, expected] of Object.entries(expectedEnums)) {
+                const actual = enumResult.rows.find(
+                  row => row.typname === name
                 );
 
-                console.log('Empty migration history initialized.');
-              } else {
-                if (history.rows.length > migrations.length) {
-                  throw new Error('Unexpected migration history length.');
-                }
-
-                for (let i = 0; i < history.rows.length; i++) {
-                  const recorded = history.rows[i];
-                  const expected = migrations[i];
-
-                  if (
-                    recorded.hash !== expected.hash ||
-                    Number(recorded.created_at) !== expected.when
-                  ) {
-                    throw new Error(
-                      `Migration history mismatch at ${expected.tag}.`
-                    );
-                  }
-                }
+                console.log(`ENUM: ${name}`);
 
                 console.log(
-                  `Existing migration history verified: ${history.rows.length} entries.`
+                  'ACTUAL:',
+                  JSON.stringify(actual?.labels ?? null)
+                );
+
+                console.log(
+                  'EXPECTED:',
+                  JSON.stringify(expected)
+                );
+
+                console.log(
+                  'MATCH:',
+                  JSON.stringify(actual?.labels ?? null) ===
+                  JSON.stringify(expected)
+                );
+
+                console.log('------------------------------');
+              }
+
+              console.log('\n========== TABLE DIAGNOSTICS ==========\n');
+
+              const tables = await client.query(`
+                SELECT
+                  table_schema,
+                  table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+              `);
+
+              console.log(
+                JSON.stringify(tables.rows, null, 2)
+              );
+
+              console.log('\n========== MIGRATION HISTORY ==========\n');
+
+              const historyExists = await client.query(`
+                SELECT to_regclass(
+                  'drizzle.__drizzle_migrations'
+                ) AS history_table
+              `);
+
+              console.log(
+                'DRIZZLE HISTORY:',
+                historyExists.rows[0].history_table
+              );
+
+              if (historyExists.rows[0].history_table) {
+                const history = await client.query(`
+                  SELECT id, hash, created_at
+                  FROM drizzle.__drizzle_migrations
+                  ORDER BY created_at, id
+                `);
+
+                console.log(
+                  JSON.stringify(history.rows, null, 2)
                 );
               }
-            }
 
-            await client.query('COMMIT');
-          } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-          } finally {
-            client.release();
-            await pool.end();
-          }
-          NODE
+              console.log('\n========== DIAGNOSTIC COMPLETE ==========\n');
 
-      - name: Apply pending migrations
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run db:migrate
-
-      - name: Verify all migrations and new schema
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          node --input-type=module <<'NODE'
-          import pg from 'pg';
-          import { readFile } from 'node:fs/promises';
-          import { createHash } from 'node:crypto';
-
-          const journal = JSON.parse(
-            await readFile('drizzle/meta/_journal.json', 'utf8')
-          );
-
-          const expected = [];
-
-          for (const entry of journal.entries) {
-            const content = await readFile(`drizzle/${entry.tag}.sql`);
-            expected.push({
-              hash: createHash('sha256').update(content).digest('hex'),
-              when: entry.when
-            });
-          }
-
-          const pool = new pg.Pool({
-            connectionString: process.env.DATABASE_URL,
-            max: 1
-          });
-
-          try {
-            const history = await pool.query(`
-              SELECT hash, created_at::text AS created_at
-              FROM drizzle.__drizzle_migrations
-              ORDER BY created_at ASC, id ASC
-            `);
-
-            if (history.rows.length !== expected.length) {
-              throw new Error('Not all migrations are recorded.');
-            }
-
-            for (let i = 0; i < expected.length; i++) {
-              if (
-                history.rows[i].hash !== expected[i].hash ||
-                Number(history.rows[i].created_at) !== expected[i].when
-              ) {
-                throw new Error(`Migration verification failed at index ${i}.`);
-              }
-            }
-
-            const result = await pool.query(`
-              SELECT
-                to_regclass('public.customer_cards') IS NOT NULL
-                  AS customer_cards,
-
-                to_regclass('public.customer_mobiles') IS NOT NULL
-                  AS customer_mobiles,
-
-                EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'customer_cards'
-                    AND column_name = 'is_archived'
-                ) AS cards_archived,
-
-                EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'customer_mobiles'
-                    AND column_name = 'is_archived'
-                ) AS mobiles_archived,
-
-                EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'drivers'
-                    AND column_name = 'portal_password_encrypted'
-                ) AS driver_password,
-
-                EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'workshops'
-                    AND column_name = 'portal_password_encrypted'
-                ) AS workshop_password,
-
-                EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_schema = 'public'
-                    AND table_name = 'requests'
-                    AND column_name = 'payment_card_number'
-                ) AS payment_card,
-
-                EXISTS (
-                  SELECT 1
-                  FROM pg_type t
-                  JOIN pg_enum e ON e.enumtypid = t.oid
-                  JOIN pg_namespace n ON n.oid = t.typnamespace
-                  WHERE n.nspname = 'public'
-                    AND t.typname = 'request_status'
-                    AND e.enumlabel = 'awaiting_payment'
-                ) AS awaiting_payment
-            `);
-
-            const state = result.rows[0];
-            const missing = Object.entries(state)
-              .filter(([, value]) => value !== true)
-              .map(([name]) => name);
-
-            if (missing.length) {
-              throw new Error(
-                `Migration verification failed: ${missing.join(', ')}`
+              console.log(
+                'READ-ONLY DIAGNOSTIC COMPLETED.'
               );
+
+              console.log(
+                'NO MIGRATIONS WERE EXECUTED.'
+              );
+
+              console.log(
+                'NO DATABASE SCHEMA CHANGES WERE MADE.'
+              );
+
+            } finally {
+              client.release();
             }
 
-            console.log('SUCCESS: all five migrations verified.');
-            console.log('SUCCESS: all expected database objects exist.');
           } finally {
             await pool.end();
           }
