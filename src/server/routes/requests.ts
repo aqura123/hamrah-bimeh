@@ -1,13 +1,20 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { Router } from 'express';
+import { z } from 'zod';
 import { ALLOWED_STATUS_TRANSITIONS, type RequestStatus } from '../../shared/domain.js';
 import { maskNationalId } from '../../shared/iran-identifiers.js';
-import { postMessageSchema, requestCancellationSchema } from '../../shared/validation.js';
+import {
+  portalPasswordSchema,
+  postMessageSchema,
+  requestCancellationSchema,
+} from '../../shared/validation.js';
 import type { AppConfig } from '../config.js';
 import type { AppDb } from '../db/client.js';
 import {
   auditEvents,
   customers,
+  customerCards,
+  customerMobiles,
   drivers,
   insuredEmployees,
   requestEmployeeSubmissions,
@@ -17,7 +24,10 @@ import {
   users,
   workshops,
 } from '../db/schema.js';
-import { requireAuth, requireCustomer } from '../middleware/auth.js';
+import { requireAuth, requireCustomer, requireAdmin } from '../middleware/auth.js';
+import { decryptCard } from '../services/card-vault.js';
+import { decryptPortalPassword, encryptPortalPassword } from '../services/portal-credential.js';
+import { identifyBank } from '../../shared/banks.js';
 import { recordAuditEvent } from '../services/audit.js';
 import { notifyAllOfficeAdmins, notifyCustomerByCustomerId } from '../services/notifications.js';
 import {
@@ -60,6 +70,48 @@ export function createRequestsAndFilesRouter(
         return res.status(404).json({ error: 'درخواست مورد نظر یافت نشد.' });
       }
 
+      let cardDetails = null;
+      let mobileDetails = null;
+      if (isAdmin && reqRow.cardId) {
+        const [card] = await db
+          .select()
+          .from(customerCards)
+          .where(
+            and(
+              eq(customerCards.id, reqRow.cardId),
+              eq(customerCards.customerId, reqRow.customerId),
+            ),
+          )
+          .limit(1);
+        if (card) {
+          const data = decryptCard(config, card.customerId, card.encryptedData);
+          cardDetails = {
+            ...data,
+            id: card.id,
+            bankName: identifyBank(data.number)?.name_fa ?? 'بانک ناشناخته',
+          };
+        }
+      }
+      if (isAdmin && reqRow.mobileId) {
+        const [mobile] = await db
+          .select()
+          .from(customerMobiles)
+          .where(
+            and(
+              eq(customerMobiles.id, reqRow.mobileId),
+              eq(customerMobiles.customerId, reqRow.customerId),
+            ),
+          )
+          .limit(1);
+        if (mobile)
+          mobileDetails = {
+            id: mobile.id,
+            mobile: mobile.mobile,
+            ownerName: mobile.ownerName,
+            verified: mobile.verified,
+          };
+      }
+
       const [customerRow] = await db
         .select()
         .from(customers)
@@ -68,7 +120,11 @@ export function createRequestsAndFilesRouter(
 
       let driverData = null;
       if (reqRow.driverId) {
-        const [d] = await db.select().from(drivers).where(eq(drivers.id, reqRow.driverId)).limit(1);
+        const [d] = await db
+          .select()
+          .from(drivers)
+          .where(and(eq(drivers.id, reqRow.driverId), eq(drivers.customerId, reqRow.customerId)))
+          .limit(1);
         if (d) {
           driverData = {
             id: d.id,
@@ -76,6 +132,16 @@ export function createRequestsAndFilesRouter(
             maskedNationalId: maskNationalId(d.nationalId),
             // Reveal full national ID ONLY to authorized office staff performing manual portal tasks
             nationalId: isAdmin ? d.nationalId : undefined,
+            portalPassword:
+              isAdmin && d.portalPasswordEncrypted
+                ? decryptPortalPassword(
+                    config,
+                    d.customerId,
+                    'driver',
+                    d.id,
+                    d.portalPasswordEncrypted,
+                  )
+                : undefined,
             reviewState: d.reviewState,
           };
         }
@@ -86,7 +152,9 @@ export function createRequestsAndFilesRouter(
         const [w] = await db
           .select()
           .from(workshops)
-          .where(eq(workshops.id, reqRow.workshopId))
+          .where(
+            and(eq(workshops.id, reqRow.workshopId), eq(workshops.customerId, reqRow.customerId)),
+          )
           .limit(1);
         if (w) {
           workshopData = {
@@ -96,6 +164,16 @@ export function createRequestsAndFilesRouter(
             contactFullName: w.contactFullName,
             maskedContactNationalId: maskNationalId(w.contactNationalId),
             contactNationalId: isAdmin ? w.contactNationalId : undefined,
+            portalPassword:
+              isAdmin && w.portalPasswordEncrypted
+                ? decryptPortalPassword(
+                    config,
+                    w.customerId,
+                    'workshop',
+                    w.id,
+                    w.portalPasswordEncrypted,
+                  )
+                : undefined,
             reviewState: w.reviewState,
           };
         }
@@ -173,6 +251,7 @@ export function createRequestsAndFilesRouter(
           cancellationDecisionNote: reqRow.cancellationDecisionNote,
           cancellationDecidedAt: reqRow.cancellationDecidedAt,
           finalAmount: reqRow.finalAmount,
+          paymentCardNumber: isAdmin ? reqRow.paymentCardNumber : undefined,
           currencyUnit: reqRow.currencyUnit,
           initialExplanation: reqRow.initialExplanation,
           hasNewEmployeeSubmission: reqRow.hasNewEmployeeSubmission,
@@ -195,6 +274,8 @@ export function createRequestsAndFilesRouter(
               phone: customerRow.phone,
             }
           : null,
+        cardDetails,
+        mobileDetails,
         driver: driverData,
         workshop: workshopData,
         employeeSubmissions: employeeSubmissionsRaw.map((emp) => ({
@@ -230,6 +311,175 @@ export function createRequestsAndFilesRouter(
           createdAt: ev.createdAt,
         })),
       });
+    }),
+  );
+
+  // Only office staff can change a stored profile credential. All request history uses the current value.
+  router.patch(
+    '/requests/:requestId/profile-portal-password',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const { requestId } = req.params;
+      if (!isValidUuid(requestId)) return res.status(404).json({ error: 'درخواست یافت نشد.' });
+      const parsed = z.object({ password: portalPasswordSchema }).strict().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json(formatZodError(parsed.error));
+      const [request] = await db
+        .select({
+          customerId: requests.customerId,
+          driverId: requests.driverId,
+          workshopId: requests.workshopId,
+        })
+        .from(requests)
+        .where(eq(requests.id, requestId))
+        .limit(1);
+      if (!request) return res.status(404).json({ error: 'درخواست یافت نشد.' });
+      if (request.driverId) {
+        const [row] = await db
+          .update(drivers)
+          .set({
+            portalPasswordEncrypted: encryptPortalPassword(
+              config,
+              request.customerId,
+              'driver',
+              request.driverId,
+              parsed.data.password,
+            ),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(drivers.id, request.driverId), eq(drivers.customerId, request.customerId)))
+          .returning({ id: drivers.id });
+        if (!row) return res.status(404).json({ error: 'پرونده راننده یافت نشد.' });
+      } else if (request.workshopId) {
+        const [row] = await db
+          .update(workshops)
+          .set({
+            portalPasswordEncrypted: encryptPortalPassword(
+              config,
+              request.customerId,
+              'workshop',
+              request.workshopId,
+              parsed.data.password,
+            ),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(eq(workshops.id, request.workshopId), eq(workshops.customerId, request.customerId)),
+          )
+          .returning({ id: workshops.id });
+        if (!row) return res.status(404).json({ error: 'پرونده کارگاه یافت نشد.' });
+      } else return res.status(404).json({ error: 'پرونده یافت نشد.' });
+      await recordAuditEvent(db, {
+        actorUserId: req.auth!.user.id,
+        actorRole: 'office_admin',
+        entityType: 'request',
+        entityId: requestId,
+        requestId,
+        eventType: 'profile_portal_password_updated',
+        summaryFa: 'رمز سامانه تأمین اجتماعی پرونده توسط دفتر به‌روزرسانی شد.',
+      });
+      return res.json({ ok: true });
+    }),
+  );
+
+  // Verification is a manual office flag shared by all requests that reference this mobile.
+  router.patch(
+    '/requests/:requestId/mobile-verification',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      if (!isValidUuid(req.params.requestId)) {
+        return res.status(404).json({ error: 'درخواست مورد نظر یافت نشد.' });
+      }
+      const parsed = z.object({ verified: z.boolean() }).strict().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json(formatZodError(parsed.error));
+      const [request] = await db
+        .select({ mobileId: requests.mobileId, customerId: requests.customerId })
+        .from(requests)
+        .where(eq(requests.id, req.params.requestId))
+        .limit(1);
+      if (!request?.mobileId) {
+        return res.status(404).json({ error: 'شماره موبایل برای این درخواست ثبت نشده است.' });
+      }
+      const [mobile] = await db
+        .update(customerMobiles)
+        .set({ verified: parsed.data.verified })
+        .where(
+          and(
+            eq(customerMobiles.id, request.mobileId),
+            eq(customerMobiles.customerId, request.customerId),
+          ),
+        )
+        .returning({ verified: customerMobiles.verified });
+      if (!mobile) return res.status(404).json({ error: 'شماره موبایل یافت نشد.' });
+      return res.json({ verified: mobile.verified });
+    }),
+  );
+
+  // Remove the link only on this request; archive the reusable entry so history remains intact.
+  router.delete(
+    '/requests/:requestId/saved-contacts/:kind',
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const { requestId, kind } = req.params;
+      if (!requestId || !kind || !isValidUuid(requestId) || !['card', 'mobile'].includes(kind)) {
+        return res.status(404).json({ error: 'اطلاعات مورد نظر یافت نشد.' });
+      }
+      const result = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({
+            id: requests.id,
+            customerId: requests.customerId,
+            cardId: requests.cardId,
+            mobileId: requests.mobileId,
+          })
+          .from(requests)
+          .where(eq(requests.id, requestId))
+          .limit(1)
+          .for('update');
+        if (!row) return false;
+        if (kind === 'card' && row.cardId) {
+          const [card] = await tx
+            .update(customerCards)
+            .set({ isArchived: true })
+            .where(
+              and(eq(customerCards.id, row.cardId), eq(customerCards.customerId, row.customerId)),
+            )
+            .returning({ id: customerCards.id });
+          if (!card) return false;
+          await tx.update(requests).set({ cardId: null }).where(eq(requests.id, row.id));
+          // When no historical request references this card, erase the encrypted record as well.
+          const [remaining] = await tx
+            .select({ id: requests.id })
+            .from(requests)
+            .where(eq(requests.cardId, card.id))
+            .limit(1);
+          if (!remaining) await tx.delete(customerCards).where(eq(customerCards.id, card.id));
+          return true;
+        }
+        if (kind === 'mobile' && row.mobileId) {
+          const [mobile] = await tx
+            .update(customerMobiles)
+            .set({ isArchived: true })
+            .where(
+              and(
+                eq(customerMobiles.id, row.mobileId),
+                eq(customerMobiles.customerId, row.customerId),
+              ),
+            )
+            .returning({ id: customerMobiles.id });
+          if (!mobile) return false;
+          await tx.update(requests).set({ mobileId: null }).where(eq(requests.id, row.id));
+          const [remaining] = await tx
+            .select({ id: requests.id })
+            .from(requests)
+            .where(eq(requests.mobileId, mobile.id))
+            .limit(1);
+          if (!remaining) await tx.delete(customerMobiles).where(eq(customerMobiles.id, mobile.id));
+          return true;
+        }
+        return false;
+      });
+      if (!result) return res.status(404).json({ error: 'اطلاعات مورد نظر یافت نشد.' });
+      return res.json({ ok: true });
     }),
   );
 

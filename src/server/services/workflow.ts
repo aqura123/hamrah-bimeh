@@ -18,6 +18,7 @@ export function assertStatusTransitionAllowed(params: {
   currentStatus: RequestStatus;
   newStatus: RequestStatus;
   finalAmount: number | null;
+  paymentCardNumber?: string | null;
   awaitingCustomerInfo: boolean;
   cancellationDecision: string | null;
   explanation?: string;
@@ -26,6 +27,7 @@ export function assertStatusTransitionAllowed(params: {
     currentStatus,
     newStatus,
     finalAmount,
+    paymentCardNumber,
     awaitingCustomerInfo,
     cancellationDecision,
     explanation,
@@ -47,6 +49,15 @@ export function assertStatusTransitionAllowed(params: {
     (!explanation || explanation.trim().length < 5)
   ) {
     throw new WorkflowError('برای رد یا لغو درخواست، ثبت توضیح روشن برای مشتری الزامی است.');
+  }
+
+  if (
+    newStatus === 'awaiting_payment' &&
+    (finalAmount === null || finalAmount < 0 || !paymentCardNumber)
+  ) {
+    throw new WorkflowError(
+      'پیش از تغییر وضعیت به «در انتظار پرداخت»، مبلغ نهایی و شماره کارت واریز را ثبت کنید.',
+    );
   }
 
   if (newStatus === 'completed') {

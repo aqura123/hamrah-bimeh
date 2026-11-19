@@ -1,16 +1,25 @@
+import { randomUUID } from 'node:crypto';
 import { and, count, desc, eq, isNull, notInArray } from 'drizzle-orm';
 import { Router } from 'express';
 import { maskNationalId } from '../../shared/iran-identifiers.js';
+import { identifyBank } from '../../shared/banks.js';
+import { encryptCard } from '../services/card-vault.js';
+import { encryptPortalPassword } from '../services/portal-credential.js';
+import type { z } from 'zod';
+import type { cardSelectionSchema, mobileSelectionSchema } from '../../shared/validation.js';
 import { formatJalaliPeriod } from '../../shared/jalali.js';
 import {
   createDriverRequestSchema,
   createWorkshopRequestSchema,
   jalaliMonthSchema,
   jalaliYearSchema,
+  paymentPreviewSchema,
 } from '../../shared/validation.js';
 import type { AppConfig } from '../config.js';
 import type { AppDb } from '../db/client.js';
 import {
+  customerCards,
+  customerMobiles,
   drivers,
   insuredEmployees,
   notifications,
@@ -33,24 +42,6 @@ import {
 import { asyncHandler, formatZodError, isValidUuid } from './helpers.js';
 import { createMemoryUpload, runMulterMiddleware } from './upload-helper.js';
 
-const FORBIDDEN_CREDENTIAL_FIELDS = [
-  'taminPassword',
-  'tamin_password',
-  'esTaminPassword',
-  'portalPassword',
-  'portal_password',
-  'ssoPassword',
-];
-
-function hasForbiddenCredentialField(obj: unknown): boolean {
-  if (!obj || typeof obj !== 'object') return false;
-  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    if (FORBIDDEN_CREDENTIAL_FIELDS.includes(k)) return true;
-    if (v && typeof v === 'object' && hasForbiddenCredentialField(v)) return true;
-  }
-  return false;
-}
-
 export function createCustomerPortalRouter(
   db: AppDb,
   config: AppConfig,
@@ -60,6 +51,125 @@ export function createCustomerPortalRouter(
   router.use(requireCustomer);
 
   const upload = createMemoryUpload(config.maxUploadBytes, 10);
+
+  // Reusable options belong to the authenticated customer, never to a driver/workshop.
+  router.get(
+    '/saved-contacts',
+    asyncHandler(async (req, res) => {
+      const id = req.auth!.customer!.id;
+      const [cards, mobiles] = await Promise.all([
+        db
+          .select({
+            id: customerCards.id,
+            holderName: customerCards.holderName,
+            lastFour: customerCards.lastFour,
+            bankId: customerCards.bankId,
+          })
+          .from(customerCards)
+          .where(and(eq(customerCards.customerId, id), eq(customerCards.isArchived, false)))
+          .orderBy(desc(customerCards.createdAt)),
+        db
+          .select({
+            id: customerMobiles.id,
+            mobile: customerMobiles.mobile,
+            ownerName: customerMobiles.ownerName,
+            verified: customerMobiles.verified,
+          })
+          .from(customerMobiles)
+          .where(and(eq(customerMobiles.customerId, id), eq(customerMobiles.isArchived, false)))
+          .orderBy(desc(customerMobiles.createdAt)),
+      ]);
+      return res.json({ cards, mobiles });
+    }),
+  );
+
+  // This is a transfer instruction, not a payment transaction or proof of payment.
+  const getPendingPayments = async (customerId: string) =>
+    db
+      .select({
+        id: requests.id,
+        referenceCode: requests.referenceCode,
+        requestType: requests.requestType,
+        jalaliYear: requests.jalaliYear,
+        jalaliMonth: requests.jalaliMonth,
+        finalAmount: requests.finalAmount,
+        currencyUnit: requests.currencyUnit,
+        paymentCardNumber: requests.paymentCardNumber,
+        driverName: drivers.fullName,
+        workshopName: workshops.workshopName,
+      })
+      .from(requests)
+      .leftJoin(drivers, and(eq(requests.driverId, drivers.id), eq(drivers.customerId, customerId)))
+      .leftJoin(
+        workshops,
+        and(eq(requests.workshopId, workshops.id), eq(workshops.customerId, customerId)),
+      )
+      .where(and(eq(requests.customerId, customerId), eq(requests.status, 'awaiting_payment')))
+      .orderBy(desc(requests.submittedAt));
+
+  router.get(
+    '/pending-payments',
+    asyncHandler(async (req, res) => {
+      const rows = await getPendingPayments(req.auth!.customer!.id);
+      return res.json({ items: rows });
+    }),
+  );
+
+  router.post(
+    '/payment-preview',
+    asyncHandler(async (req, res) => {
+      const parsed = paymentPreviewSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json(formatZodError(parsed.error));
+      const pending = await getPendingPayments(req.auth!.customer!.id);
+      const byId = new Map(pending.map((row) => [row.id, row]));
+      const selected = parsed.data.requestIds.map((id) => byId.get(id));
+      if (
+        selected.some(
+          (row) =>
+            !row ||
+            row.finalAmount === null ||
+            !row.paymentCardNumber ||
+            !['TOMAN', 'RIAL'].includes(row.currencyUnit),
+        )
+      )
+        return res.status(409).json({
+          error:
+            'یک یا چند درخواست تغییر کرده یا دیگر قابل انتخاب نیستند. فهرست را دوباره بارگذاری کنید.',
+        });
+      const groups = new Map<
+        string,
+        { cardNumber: string; items: typeof pending; totals: Map<string, bigint> }
+      >();
+      const grandTotals = new Map<string, bigint>();
+      for (const row of selected) {
+        if (!row || row.finalAmount === null || !row.paymentCardNumber) continue;
+        let group = groups.get(row.paymentCardNumber);
+        if (!group) {
+          group = { cardNumber: row.paymentCardNumber, items: [], totals: new Map() };
+          groups.set(row.paymentCardNumber, group);
+        }
+        group.items.push(row);
+        group.totals.set(
+          row.currencyUnit,
+          (group.totals.get(row.currencyUnit) ?? 0n) + BigInt(row.finalAmount),
+        );
+        grandTotals.set(
+          row.currencyUnit,
+          (grandTotals.get(row.currencyUnit) ?? 0n) + BigInt(row.finalAmount),
+        );
+      }
+      const serialize = (map: Map<string, bigint>) =>
+        Array.from(map, ([currencyUnit, amount]) => ({ currencyUnit, amount: amount.toString() }));
+      return res.json({
+        groups: Array.from(groups.values(), (group) => ({
+          cardNumber: group.cardNumber,
+          items: group.items,
+          totals: serialize(group.totals),
+        })),
+        totals: serialize(grandTotals),
+      });
+    }),
+  );
 
   // 1. Customer Portal Overview (Drivers + Workshops + Monthly History newest-first)
   router.get(
@@ -127,6 +237,7 @@ export function createCustomerPortalRouter(
           id: d.id,
           fullName: d.fullName,
           maskedNationalId: maskNationalId(d.nationalId),
+          hasPortalPassword: Boolean(d.portalPasswordEncrypted),
           reviewState: d.reviewState,
           createdAt: d.createdAt,
           requests: (requestsByDriver.get(d.id) ?? []).map((r) => ({
@@ -147,6 +258,7 @@ export function createCustomerPortalRouter(
           workshopCode: w.workshopCode,
           contactFullName: w.contactFullName,
           maskedContactNationalId: maskNationalId(w.contactNationalId),
+          hasPortalPassword: Boolean(w.portalPasswordEncrypted),
           reviewState: w.reviewState,
           employeesCount: employeeCountByWorkshop.get(w.id) ?? 0,
           createdAt: w.createdAt,
@@ -347,12 +459,6 @@ export function createCustomerPortalRouter(
         }
       }
 
-      if (hasForbiddenCredentialField(rawPayload)) {
-        return res.status(400).json({
-          error: 'ارسال رمز عبور سامانه تامین اجتماعی مجاز نیست.',
-        });
-      }
-
       const parsed = createDriverRequestSchema.safeParse(rawPayload);
       if (!parsed.success) {
         return res.status(400).json(formatZodError(parsed.error));
@@ -377,6 +483,13 @@ export function createCustomerPortalRouter(
         }
 
         const result = await db.transaction(async (tx) => {
+          const selected = await saveSelectedContacts(
+            tx as unknown as AppDb,
+            config,
+            customer.id,
+            data.cardSelection,
+            data.mobileSelection,
+          );
           let targetDriverId: string;
           let targetDriverName: string;
 
@@ -391,23 +504,54 @@ export function createCustomerPortalRouter(
                   eq(drivers.isArchived, false),
                 ),
               )
-              .limit(1);
+              .limit(1)
+              .for('update');
 
             if (!existingDriver) {
               throw new DriverOwnershipError(
                 'راننده انتخاب‌شده متعلق به حساب شما نیست یا یافت نشد.',
               );
             }
+            if (
+              existingDriver.portalPasswordEncrypted &&
+              data.initialPortalPassword !== undefined
+            ) {
+              throw new DriverOwnershipError('تغییر رمز ثبت‌شده فقط توسط دفتر مجاز است.');
+            }
+            if (!existingDriver.portalPasswordEncrypted) {
+              if (!data.initialPortalPassword) throw new PortalPasswordRequiredError();
+              await tx
+                .update(drivers)
+                .set({
+                  portalPasswordEncrypted: encryptPortalPassword(
+                    config,
+                    customer.id,
+                    'driver',
+                    existingDriver.id,
+                    data.initialPortalPassword,
+                  ),
+                })
+                .where(eq(drivers.id, existingDriver.id));
+            }
             targetDriverId = existingDriver.id;
             targetDriverName = existingDriver.fullName;
           } else {
             const newDriverInput = data.newDriver!;
+            const newDriverId = randomUUID();
             const [createdDriver] = await tx
               .insert(drivers)
               .values({
+                id: newDriverId,
                 customerId: customer.id,
                 fullName: newDriverInput.fullName,
                 nationalId: newDriverInput.nationalId,
+                portalPasswordEncrypted: encryptPortalPassword(
+                  config,
+                  customer.id,
+                  'driver',
+                  newDriverId,
+                  newDriverInput.portalPassword,
+                ),
                 reviewState: 'pending_office_review',
               })
               .returning();
@@ -453,6 +597,8 @@ export function createCustomerPortalRouter(
             .values({
               referenceCode,
               customerId: customer.id,
+              cardId: selected.cardId,
+              mobileId: selected.mobileId,
               requestType: 'driver',
               driverId: targetDriverId,
               workshopId: null,
@@ -575,6 +721,11 @@ export function createCustomerPortalRouter(
         if (err instanceof FileValidationError) {
           return res.status(400).json({ error: err.message });
         }
+        if (err instanceof PortalPasswordRequiredError) {
+          return res
+            .status(400)
+            .json({ error: err.message, fieldErrors: { initialPortalPassword: err.message } });
+        }
         if (err instanceof DriverOwnershipError) {
           return res.status(403).json({ error: err.message });
         }
@@ -604,13 +755,6 @@ export function createCustomerPortalRouter(
         } catch {
           return res.status(400).json({ error: 'ساختار اطلاعات ارسالی معتبر نیست.' });
         }
-      }
-
-      if (hasForbiddenCredentialField(rawPayload)) {
-        return res.status(400).json({
-          error:
-            'این سامانه رمز عبور درگاه تامین اجتماعی (es.tamin.ir) را دریافت یا ذخیره نمی‌کند.',
-        });
       }
 
       const parsed = createWorkshopRequestSchema.safeParse(rawPayload);
@@ -653,6 +797,13 @@ export function createCustomerPortalRouter(
         }
 
         const result = await db.transaction(async (tx) => {
+          const selected = await saveSelectedContacts(
+            tx as unknown as AppDb,
+            config,
+            customer.id,
+            data.cardSelection,
+            data.mobileSelection,
+          );
           let targetWorkshopId: string;
           let targetWorkshopName: string;
 
@@ -667,21 +818,52 @@ export function createCustomerPortalRouter(
                   eq(workshops.isArchived, false),
                 ),
               )
-              .limit(1);
+              .limit(1)
+              .for('update');
 
             if (!existingWorkshop) {
               throw new DriverOwnershipError(
                 'کارگاه انتخاب‌شده متعلق به حساب شما نیست یا یافت نشد.',
               );
             }
+            if (
+              existingWorkshop.portalPasswordEncrypted &&
+              data.initialPortalPassword !== undefined
+            ) {
+              throw new DriverOwnershipError('تغییر رمز ثبت‌شده فقط توسط دفتر مجاز است.');
+            }
+            if (!existingWorkshop.portalPasswordEncrypted) {
+              if (!data.initialPortalPassword) throw new PortalPasswordRequiredError();
+              await tx
+                .update(workshops)
+                .set({
+                  portalPasswordEncrypted: encryptPortalPassword(
+                    config,
+                    customer.id,
+                    'workshop',
+                    existingWorkshop.id,
+                    data.initialPortalPassword,
+                  ),
+                })
+                .where(eq(workshops.id, existingWorkshop.id));
+            }
             targetWorkshopId = existingWorkshop.id;
             targetWorkshopName = existingWorkshop.workshopName;
           } else {
             const nw = data.newWorkshop!;
+            const newWorkshopId = randomUUID();
             const [createdWorkshop] = await tx
               .insert(workshops)
               .values({
+                id: newWorkshopId,
                 customerId: customer.id,
+                portalPasswordEncrypted: encryptPortalPassword(
+                  config,
+                  customer.id,
+                  'workshop',
+                  newWorkshopId,
+                  nw.portalPassword,
+                ),
                 workshopName: nw.workshopName,
                 workshopCode: nw.workshopCode,
                 contactFullName: nw.contactFullName,
@@ -732,6 +914,8 @@ export function createCustomerPortalRouter(
             .values({
               referenceCode,
               customerId: customer.id,
+              cardId: selected.cardId,
+              mobileId: selected.mobileId,
               requestType: 'workshop',
               driverId: null,
               workshopId: targetWorkshopId,
@@ -925,6 +1109,11 @@ export function createCustomerPortalRouter(
         if (err instanceof FileValidationError) {
           return res.status(400).json({ error: err.message });
         }
+        if (err instanceof PortalPasswordRequiredError) {
+          return res
+            .status(400)
+            .json({ error: err.message, fieldErrors: { initialPortalPassword: err.message } });
+        }
         if (err instanceof DriverOwnershipError) {
           return res.status(403).json({ error: err.message });
         }
@@ -940,5 +1129,76 @@ class DriverOwnershipError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'DriverOwnershipError';
+  }
+}
+
+async function saveSelectedContacts(
+  db: AppDb,
+  config: AppConfig,
+  customerId: string,
+  card: z.infer<typeof cardSelectionSchema>,
+  mobile: z.infer<typeof mobileSelectionSchema>,
+) {
+  let cardId: string;
+  if (card.mode === 'existing') {
+    const [row] = await db
+      .select({ id: customerCards.id })
+      .from(customerCards)
+      .where(
+        and(
+          eq(customerCards.id, card.id),
+          eq(customerCards.customerId, customerId),
+          eq(customerCards.isArchived, false),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    if (!row) throw new DriverOwnershipError('کارت انتخاب‌شده متعلق به حساب شما نیست یا یافت نشد.');
+    cardId = row.id;
+  } else {
+    const data = card.card;
+    const [row] = await db
+      .insert(customerCards)
+      .values({
+        customerId,
+        encryptedData: encryptCard(config, customerId, data),
+        holderName: data.holderName,
+        lastFour: data.number.slice(-4),
+        bankId: identifyBank(data.number)?.id ?? null,
+      })
+      .returning({ id: customerCards.id });
+    cardId = row!.id;
+  }
+  let mobileId: string;
+  if (mobile.mode === 'existing') {
+    const [row] = await db
+      .select({ id: customerMobiles.id })
+      .from(customerMobiles)
+      .where(
+        and(
+          eq(customerMobiles.id, mobile.id),
+          eq(customerMobiles.customerId, customerId),
+          eq(customerMobiles.isArchived, false),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    if (!row)
+      throw new DriverOwnershipError('شماره انتخاب‌شده متعلق به حساب شما نیست یا یافت نشد.');
+    mobileId = row.id;
+  } else {
+    const [row] = await db
+      .insert(customerMobiles)
+      .values({ customerId, mobile: mobile.mobile, ownerName: mobile.ownerName })
+      .returning({ id: customerMobiles.id });
+    mobileId = row!.id;
+  }
+  return { cardId, mobileId };
+}
+
+class PortalPasswordRequiredError extends Error {
+  constructor() {
+    super('برای این پرونده، ثبت اولیه رمز سامانه تأمین اجتماعی الزامی است.');
+    this.name = 'PortalPasswordRequiredError';
   }
 }

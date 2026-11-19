@@ -25,6 +25,7 @@ export const requestStatusEnum = pgEnum('request_status', [
   'office_reviewing',
   'needs_customer_info',
   'in_progress',
+  'awaiting_payment',
   'completed',
   'rejected',
   'cancelled',
@@ -115,6 +116,7 @@ export const drivers = pgTable(
       .references(() => customers.id, { onDelete: 'restrict' }),
     fullName: varchar('full_name', { length: 150 }).notNull(),
     nationalId: varchar('national_id', { length: 10 }).notNull(),
+    portalPasswordEncrypted: text('portal_password_encrypted'),
     reviewState: varchar('review_state', { length: 32 }).notNull().default('pending_office_review'),
     isArchived: boolean('is_archived').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -138,6 +140,7 @@ export const workshops = pgTable(
     workshopCode: varchar('workshop_code', { length: 50 }).notNull(),
     contactFullName: varchar('contact_full_name', { length: 150 }).notNull(),
     contactNationalId: varchar('contact_national_id', { length: 10 }).notNull(),
+    portalPasswordEncrypted: text('portal_password_encrypted'),
     reviewState: varchar('review_state', { length: 32 }).notNull().default('pending_office_review'),
     isArchived: boolean('is_archived').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -183,6 +186,8 @@ export const requests = pgTable(
       .notNull()
       .references(() => customers.id, { onDelete: 'restrict' }),
     requestType: requestTypeEnum('request_type').notNull(),
+    cardId: uuid('card_id').references(() => customerCards.id, { onDelete: 'set null' }),
+    mobileId: uuid('mobile_id').references(() => customerMobiles.id, { onDelete: 'set null' }),
     driverId: uuid('driver_id').references(() => drivers.id, { onDelete: 'restrict' }),
     workshopId: uuid('workshop_id').references(() => workshops.id, { onDelete: 'restrict' }),
     jalaliYear: smallint('jalali_year').notNull(),
@@ -198,6 +203,7 @@ export const requests = pgTable(
     cancellationDecisionNote: text('cancellation_decision_note'),
     cancellationDecidedAt: timestamp('cancellation_decided_at', { withTimezone: true }),
     finalAmount: bigint('final_amount', { mode: 'number' }),
+    paymentCardNumber: varchar('payment_card_number', { length: 16 }),
     currencyUnit: varchar('currency_unit', { length: 16 }).notNull().default('TOMAN'),
     initialExplanation: text('initial_explanation'),
     hasNewEmployeeSubmission: boolean('has_new_employee_submission').notNull().default(false),
@@ -361,3 +367,29 @@ export const notifications = pgTable(
     ),
   ],
 );
+
+// Customer-owned references, shared across all driver and workshop requests.
+export const customerCards = pgTable('customer_cards', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id, { onDelete: 'restrict' }),
+  encryptedData: text('encrypted_data').notNull(),
+  lastFour: varchar('last_four', { length: 4 }).notNull(),
+  holderName: varchar('holder_name', { length: 150 }).notNull(),
+  bankId: varchar('bank_id', { length: 50 }),
+  isArchived: boolean('is_archived').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const customerMobiles = pgTable('customer_mobiles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id, { onDelete: 'restrict' }),
+  mobile: varchar('mobile', { length: 11 }).notNull(),
+  ownerName: varchar('owner_name', { length: 150 }).notNull(),
+  verified: boolean('verified').notNull().default(false),
+  isArchived: boolean('is_archived').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});

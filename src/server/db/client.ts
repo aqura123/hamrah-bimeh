@@ -7,7 +7,6 @@ import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { migrate as migratePglite } from 'drizzle-orm/pglite/migrator';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import pg from 'pg';
-import { logger } from '../logger.js';
 import * as schema from './schema.js';
 
 export type AppDb = PgDatabase<PgQueryResultHKT, typeof schema>;
@@ -21,24 +20,10 @@ export interface DatabaseConnection {
 const MIGRATIONS_FOLDER = path.resolve(process.cwd(), 'drizzle');
 
 async function openPgliteWithRecovery(resolvedDir: string): Promise<PGlite> {
-  try {
-    const client = new PGlite(resolvedDir);
-    await client.waitReady;
-    return client;
-  } catch (err) {
-    if (process.env.NODE_ENV === 'production') {
-      throw err;
-    }
-    logger.warn('db.pglite.recovering_unclean_snapshot', {
-      dir: resolvedDir,
-      reason: err instanceof Error ? err.message : String(err),
-    });
-    fs.rmSync(resolvedDir, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(resolvedDir), { recursive: true });
-    const freshClient = new PGlite(resolvedDir);
-    await freshClient.waitReady;
-    return freshClient;
-  }
+  // Never delete or recreate a potentially valuable database on an unclean snapshot.
+  const client = new PGlite(resolvedDir);
+  await client.waitReady;
+  return client;
 }
 
 export async function createDatabaseConnection(databaseUrl: string): Promise<DatabaseConnection> {
@@ -46,7 +31,16 @@ export async function createDatabaseConnection(databaseUrl: string): Promise<Dat
     const rawTarget = databaseUrl.slice('pglite://'.length).trim();
     let client: PGlite;
     if (!rawTarget || rawTarget === 'memory' || rawTarget === ':memory:') {
-      client = new PGlite();
+      const previewSnapshotPath = process.env.PREVIEW_DB_SNAPSHOT_PATH;
+      if (previewSnapshotPath && process.env.NODE_ENV === 'production') {
+        throw new Error('PREVIEW_DB_SNAPSHOT_PATH is only available for non-production previews.');
+      }
+      if (previewSnapshotPath) {
+        const compressedBackup = await fs.promises.readFile(path.resolve(previewSnapshotPath));
+        client = new PGlite({ loadDataDir: new Blob([new Uint8Array(compressedBackup)]) });
+      } else {
+        client = new PGlite();
+      }
       await client.waitReady;
     } else {
       const resolvedDir = path.resolve(process.cwd(), rawTarget);

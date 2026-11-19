@@ -11,6 +11,7 @@ export const REQUEST_STATUSES = [
   'office_reviewing',
   'needs_customer_info',
   'in_progress',
+  'awaiting_payment',
   'completed',
   'rejected',
   'cancelled',
@@ -47,6 +48,7 @@ export const REQUEST_STATUS_LABELS: Record<RequestStatus, string> = {
   office_reviewing: 'در حال بررسی دفتر',
   needs_customer_info: 'نیازمند تکمیل اطلاعات از طرف مشتری',
   in_progress: 'در حال انجام',
+  awaiting_payment: 'در انتظار پرداخت',
   completed: 'انجام‌شده',
   rejected: 'ردشده',
   cancelled: 'لغوشده',
@@ -54,9 +56,10 @@ export const REQUEST_STATUS_LABELS: Record<RequestStatus, string> = {
 
 export const REQUEST_STATUS_DESCRIPTIONS: Record<RequestStatus, string> = {
   registered: 'درخواست شما در سامانه ثبت شده و در نوبت بررسی دفتر قرار دارد.',
-  office_reviewing: 'مسئول دفتر در حال بررسی اطلاعات و مدارک ارسال‌شده است.',
+  office_reviewing: 'کارشناسان دفتر در حال بررسی اطلاعات و مدارک ارسال‌شده هستند.',
   needs_customer_info: 'برای ادامه یا تکمیل کار، ارسال توضیح یا مدرک تکمیلی از سوی شما لازم است.',
   in_progress: 'اقدامات اجرایی مربوط به درخواست شما توسط دفتر در حال انجام است.',
+  awaiting_payment: 'مبلغ خدمات و شماره کارت واریز توسط دفتر ثبت شده است.',
   completed: 'درخواست توسط دفتر انجام و نهایی شده است.',
   rejected: 'درخواست به دلیل اعلام‌شده در توضیحات دفتر رد شده است.',
   cancelled: 'درخواست پس از بررسی دفتر لغو شده است.',
@@ -87,10 +90,46 @@ export const PROFILE_REVIEW_LABELS: Record<ProfileReviewState, string> = {
  * Allowed status transitions managed exclusively by `office_admin`.
  */
 export const ALLOWED_STATUS_TRANSITIONS: Record<RequestStatus, readonly RequestStatus[]> = {
-  registered: ['office_reviewing', 'needs_customer_info', 'in_progress', 'rejected', 'cancelled'],
-  office_reviewing: ['needs_customer_info', 'in_progress', 'completed', 'rejected', 'cancelled'],
-  needs_customer_info: ['office_reviewing', 'in_progress', 'completed', 'rejected', 'cancelled'],
-  in_progress: ['office_reviewing', 'needs_customer_info', 'completed', 'rejected', 'cancelled'],
+  registered: [
+    'office_reviewing',
+    'needs_customer_info',
+    'in_progress',
+    'awaiting_payment',
+    'rejected',
+    'cancelled',
+  ],
+  office_reviewing: [
+    'needs_customer_info',
+    'in_progress',
+    'awaiting_payment',
+    'completed',
+    'rejected',
+    'cancelled',
+  ],
+  needs_customer_info: [
+    'office_reviewing',
+    'in_progress',
+    'awaiting_payment',
+    'completed',
+    'rejected',
+    'cancelled',
+  ],
+  in_progress: [
+    'office_reviewing',
+    'needs_customer_info',
+    'awaiting_payment',
+    'completed',
+    'rejected',
+    'cancelled',
+  ],
+  awaiting_payment: [
+    'office_reviewing',
+    'needs_customer_info',
+    'in_progress',
+    'completed',
+    'rejected',
+    'cancelled',
+  ],
   completed: [],
   rejected: [],
   cancelled: [],
@@ -102,6 +141,10 @@ export function formatMoney(
 ): string {
   if (amount === null || amount === undefined || amount === '') {
     return 'ثبت‌نشده';
+  }
+  if (typeof amount === 'string' && /^\d+$/.test(amount)) {
+    const grouped = amount.replace(/\B(?=(\d{3})+(?!\d))/g, '٬');
+    return `${toPersianDigits(grouped)} ${CURRENCY_UNIT_LABELS[unit]}`;
   }
   const num = typeof amount === 'string' ? Number(amount) : amount;
   if (!Number.isFinite(num)) {

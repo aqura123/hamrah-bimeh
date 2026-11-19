@@ -271,6 +271,7 @@ export function createAdminRouter(
           currentStatus: reqRow.status as RequestStatus,
           newStatus,
           finalAmount: reqRow.finalAmount,
+          paymentCardNumber: reqRow.paymentCardNumber,
           awaitingCustomerInfo:
             newStatus === 'completed' ? reqRow.awaitingCustomerInfo : nextAwaitingFlag,
           cancellationDecision: reqRow.cancellationDecision,
@@ -464,7 +465,7 @@ export function createAdminRouter(
       }
 
       const adminUser = req.auth!.user;
-      const { finalAmount, note } = parsed.data;
+      const { finalAmount, paymentCardNumber } = parsed.data;
       const unit = config.currencyUnit as CurrencyUnit;
       const formattedNew = formatMoney(finalAmount, unit);
       const now = new Date();
@@ -474,21 +475,12 @@ export function createAdminRouter(
           .update(requests)
           .set({
             finalAmount,
+            paymentCardNumber,
             currencyUnit: unit,
             lastActivityAt: now,
             updatedAt: now,
           })
           .where(eq(requests.id, reqRow.id));
-
-        if (note.trim().length > 0) {
-          await tx.insert(requestMessages).values({
-            requestId: reqRow.id,
-            authorUserId: adminUser.id,
-            authorRole: 'office_admin',
-            messageKind: 'explanation',
-            body: note.trim(),
-          });
-        }
 
         await recordAuditEvent(tx as unknown as AppDb, {
           actorUserId: adminUser.id,
@@ -502,8 +494,16 @@ export function createAdminRouter(
             reqRow.finalAmount === null
               ? `مبلغ نهایی خدمات به میزان ${formattedNew} توسط دفتر ثبت شد.`
               : `مبلغ نهایی خدمات به ${formattedNew} به‌روزرسانی شد.`,
-          oldValues: { finalAmount: reqRow.finalAmount, currencyUnit: reqRow.currencyUnit },
-          newValues: { finalAmount, currencyUnit: unit },
+          oldValues: {
+            finalAmount: reqRow.finalAmount,
+            currencyUnit: reqRow.currencyUnit,
+            paymentCardLastFour: reqRow.paymentCardNumber?.slice(-4) ?? null,
+          },
+          newValues: {
+            finalAmount,
+            currencyUnit: unit,
+            paymentCardLastFour: paymentCardNumber.slice(-4),
+          },
         });
 
         await notifyCustomerByCustomerId(tx as unknown as AppDb, reqRow.customerId, {
@@ -987,8 +987,14 @@ export function createAdminRouter(
           updatedAt: custRow.customer.updatedAt,
         },
         authStatus: custRow.user,
-        drivers: custDrivers,
-        workshops: custWorkshops,
+        drivers: custDrivers.map(({ portalPasswordEncrypted, ...profile }) => ({
+          ...profile,
+          hasPortalPassword: Boolean(portalPasswordEncrypted),
+        })),
+        workshops: custWorkshops.map(({ portalPasswordEncrypted, ...profile }) => ({
+          ...profile,
+          hasPortalPassword: Boolean(portalPasswordEncrypted),
+        })),
         employees: custEmployees,
         requests: custRequests,
         auditHistory: custAudit,

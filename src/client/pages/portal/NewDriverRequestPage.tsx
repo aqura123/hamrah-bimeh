@@ -5,6 +5,12 @@ import { maskNationalId } from '@shared/iran-identifiers';
 import { formatJalaliPeriod, toPersianDigits } from '@shared/jalali';
 import { createDriverRequestSchema } from '@shared/validation';
 import { useApp } from '../../context/AppContext';
+import { PortalPasswordField } from '../../components/requests/PortalPasswordField';
+import {
+  ContactSelection,
+  ContactsReview,
+  useRequestContacts,
+} from '../../components/requests/ContactSelection';
 import { ApiError, apiRequest, apiUploadFormData } from '../../lib/api';
 import {
   FileUploadBox,
@@ -26,10 +32,12 @@ interface SavedDriverOption {
   id: string;
   fullName: string;
   maskedNationalId: string;
+  hasPortalPassword: boolean;
 }
 
 export function NewDriverRequestPage() {
   const { publicConfig } = useApp();
+  const contacts = useRequestContacts();
   const [searchParams] = useSearchParams();
   const preselectedDriverId = searchParams.get('driverId') ?? '';
   const initialModeParam = searchParams.get('mode');
@@ -41,6 +49,7 @@ export function NewDriverRequestPage() {
   const [selectedDriverId, setSelectedDriverId] = useState(preselectedDriverId);
   const [newFullName, setNewFullName] = useState('');
   const [newNationalId, setNewNationalId] = useState('');
+  const [portalPassword, setPortalPassword] = useState('');
 
   const [jalaliYear, setJalaliYear] = useState(publicConfig.currentJalaliPeriod.jalaliYear);
   const [jalaliMonth, setJalaliMonth] = useState(publicConfig.currentJalaliPeriod.jalaliMonth);
@@ -93,10 +102,19 @@ export function NewDriverRequestPage() {
   }, [initialModeParam, preselectedDriverId]);
 
   const buildPayload = () => ({
+    cardSelection: contacts.cardSelection,
+    mobileSelection: contacts.mobileSelection,
     driverMode,
     driverId: driverMode === 'existing' ? selectedDriverId : undefined,
+    initialPortalPassword:
+      driverMode === 'existing' &&
+      !savedDrivers.find((d) => d.id === selectedDriverId)?.hasPortalPassword
+        ? portalPassword
+        : undefined,
     newDriver:
-      driverMode === 'new' ? { fullName: newFullName, nationalId: newNationalId } : undefined,
+      driverMode === 'new'
+        ? { fullName: newFullName, nationalId: newNationalId, portalPassword }
+        : undefined,
     jalaliYear,
     jalaliMonth,
     explanation,
@@ -107,6 +125,12 @@ export function NewDriverRequestPage() {
     setFormError(null);
     setFieldErrors({});
     setDuplicateWarning(null);
+
+    const contactError = contacts.validate();
+    if (contactError) {
+      setFormError(contactError);
+      return;
+    }
 
     const parsed = createDriverRequestSchema.safeParse(buildPayload());
     if (!parsed.success) {
@@ -161,6 +185,8 @@ export function NewDriverRequestPage() {
         if (attachments.length > 0) setUploadProgress(pct);
       });
 
+      contacts.clearSensitive();
+      setPortalPassword('');
       setCreatedResult({
         id: res.request.id,
         referenceCode: res.request.referenceCode,
@@ -254,6 +280,11 @@ export function NewDriverRequestPage() {
         subtitle="انتخاب راننده، تعیین یک ماه بیمه‌ای شمسی و ارسال توضیحات یا پیوست‌های مرتبط"
       />
 
+      {publicConfig.isDemo && (
+        <Alert variant="warning">
+          این پیش‌نمایش آزمایشی است؛ رمز واقعی سامانه تأمین اجتماعی را وارد نکنید.
+        </Alert>
+      )}
       {formError && <Alert variant="error">{formError}</Alert>}
 
       {step === 'form' ? (
@@ -272,7 +303,10 @@ export function NewDriverRequestPage() {
               >
                 <button
                   type="button"
-                  onClick={() => setDriverMode('existing')}
+                  onClick={() => {
+                    setPortalPassword('');
+                    setDriverMode('existing');
+                  }}
                   aria-pressed={driverMode === 'existing'}
                   className={`p-3.5 rounded-control border text-right text-sm font-semibold transition-colors ${
                     driverMode === 'existing'
@@ -284,7 +318,10 @@ export function NewDriverRequestPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDriverMode('new')}
+                  onClick={() => {
+                    setPortalPassword('');
+                    setDriverMode('new');
+                  }}
                   aria-pressed={driverMode === 'new'}
                   className={`p-3.5 rounded-control border text-right text-sm font-semibold transition-colors ${
                     driverMode === 'new'
@@ -304,7 +341,10 @@ export function NewDriverRequestPage() {
                     <select
                       {...props}
                       value={selectedDriverId}
-                      onChange={(e) => setSelectedDriverId(e.target.value)}
+                      onChange={(e) => {
+                        setPortalPassword('');
+                        setSelectedDriverId(e.target.value);
+                      }}
                       className={INPUT_CLASS}
                     >
                       {savedDrivers.map((d) => (
@@ -320,6 +360,18 @@ export function NewDriverRequestPage() {
                     مشخصات ثابت این راننده در پرونده شما ذخیره شده است و نیازی به ورود مجدد کد ملی
                     نیست.
                   </p>
+                )}
+                {chosenSavedDriver?.hasPortalPassword && (
+                  <p className="text-sm text-brand-muted">
+                    رمز پرونده ذخیره شده است؛ تغییر آن فقط از طریق دفتر انجام می‌شود.
+                  </p>
+                )}
+                {chosenSavedDriver && !chosenSavedDriver.hasPortalPassword && (
+                  <PortalPasswordField
+                    value={portalPassword}
+                    onChange={setPortalPassword}
+                    error={fieldErrors.initialPortalPassword}
+                  />
                 )}
               </div>
             ) : (
@@ -360,6 +412,13 @@ export function NewDriverRequestPage() {
                     />
                   )}
                 </FormField>
+                <div className="sm:col-span-2">
+                  <PortalPasswordField
+                    value={portalPassword}
+                    onChange={setPortalPassword}
+                    error={fieldErrors['newDriver.portalPassword']}
+                  />
+                </div>
               </div>
             )}
           </Card>
@@ -379,7 +438,7 @@ export function NewDriverRequestPage() {
             />
 
             <FormField
-              label="توضیحات برای مسئول دفتر (اختیاری)"
+              label="توضیحات برای کارشناس دفتر (اختیاری)"
               hint="اگر نکته‌ای درباره کارکرد یا وضعیت ماه انتخاب‌شده وجود دارد بنویسید."
               error={fieldErrors.explanation}
             >
@@ -401,9 +460,10 @@ export function NewDriverRequestPage() {
               files={attachments}
               onChange={setAttachments}
               maxUploadMb={publicConfig.maxUploadMb}
-                allowedMimeTypes={publicConfig.allowedUploadMimes}
             />
           </Card>
+
+          <ContactSelection state={contacts} />
 
           <div className="flex items-center justify-end gap-3">
             <Link
@@ -470,6 +530,8 @@ export function NewDriverRequestPage() {
               </dd>
             </div>
           </dl>
+
+          <ContactsReview state={contacts} />
 
           {uploadProgress !== null && (
             <div className="space-y-1" role="status" aria-live="polite">

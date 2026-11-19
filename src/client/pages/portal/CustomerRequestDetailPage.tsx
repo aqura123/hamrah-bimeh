@@ -23,6 +23,7 @@ import {
 } from '@shared/domain';
 import { formatJalaliDateTime, formatJalaliPeriod, toPersianDigits } from '@shared/jalali';
 import { useApp } from '../../context/AppContext';
+import { PaymentDialog } from '../../components/payments/PaymentDialog';
 import { ApiError, apiRequest, apiUploadFormData, downloadProtectedFile } from '../../lib/api';
 import {
   ConfirmDialog,
@@ -47,6 +48,16 @@ import {
 } from '../../components/ui/StatusBadge';
 
 export interface RequestDetailPayload {
+  cardDetails?: {
+    id: string;
+    number: string;
+    cvv2: string;
+    expiryMonth: string;
+    expiryYear: string;
+    holderName: string;
+    bankName: string;
+  } | null;
+  mobileDetails?: { id: string; mobile: string; ownerName: string; verified: boolean } | null;
   request: {
     id: string;
     referenceCode: string;
@@ -63,6 +74,7 @@ export interface RequestDetailPayload {
     cancellationDecisionNote: string | null;
     cancellationDecidedAt: string | null;
     finalAmount: number | null;
+    paymentCardNumber?: string | null;
     currencyUnit: CurrencyUnit;
     initialExplanation: string | null;
     hasNewEmployeeSubmission: boolean;
@@ -86,6 +98,7 @@ export interface RequestDetailPayload {
     fullName: string;
     maskedNationalId: string;
     nationalId?: string;
+    portalPassword?: string;
     reviewState: string;
   } | null;
   workshop: {
@@ -95,6 +108,7 @@ export interface RequestDetailPayload {
     contactFullName: string;
     maskedContactNationalId: string;
     contactNationalId?: string;
+    portalPassword?: string;
     reviewState: string;
   } | null;
   employeeSubmissions: Array<{
@@ -152,6 +166,7 @@ export function CustomerRequestDetailPage() {
   const [replySuccess, setReplySuccess] = useState<string | null>(null);
 
   // Cancellation modal state
+  const [paymentOpen, setPaymentOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -239,6 +254,7 @@ export function CustomerRequestDetailPage() {
 
   return (
     <div className="space-y-6">
+      {paymentOpen && <PaymentDialog onClose={() => setPaymentOpen(false)} />}
       <Breadcrumb
         items={[
           { label: 'پرتال من', to: '/portal' },
@@ -427,9 +443,9 @@ export function CustomerRequestDetailPage() {
             )}
           </div>
 
-          <p className="text-xs text-brand-muted border-t border-brand-border pt-3">
-            پرداخت آنلاین در سامانه وجود ندارد و تسویه مطابق هماهنگی با دفتر انجام می‌شود.
-          </p>
+          <div className="border-t border-brand-border pt-3">
+            <PrimaryButton onClick={() => setPaymentOpen(true)}>پرداخت</PrimaryButton>
+          </div>
         </Card>
       </div>
 
@@ -524,7 +540,7 @@ export function CustomerRequestDetailPage() {
       <Card className="p-6 space-y-5">
         <h2 className="text-base font-bold text-brand-navy flex items-center gap-2 border-b border-brand-border pb-3">
           <MessageSquare className="w-5 h-5 text-brand-blue" aria-hidden="true" />
-          <span>توضیحات و گفت‌وگو با مسئول دفتر ({toPersianDigits(detail.messages.length)})</span>
+          <span>توضیحات و گفتگو با کارشناس دفتر ({toPersianDigits(detail.messages.length)})</span>
         </h2>
 
         {detail.messages.length === 0 ? (
@@ -546,7 +562,7 @@ export function CustomerRequestDetailPage() {
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-bold text-brand-navy">
-                      {fromOffice ? `مسئول دفتر (${msg.authorName})` : `شما (${msg.authorName})`}
+                      {fromOffice ? `کارشناس دفتر (${msg.authorName})` : `شما (${msg.authorName})`}
                     </span>
                     <span className="text-brand-muted">
                       {formatJalaliDateTime(msg.createdAt, publicConfig.businessTimezone)}
@@ -570,7 +586,7 @@ export function CustomerRequestDetailPage() {
             <FormField
               label="ارسال توضیح جدید یا پاسخ به دفتر"
               required
-              hint="پاسخ شما به همراه فایل پیوست احتمالی فوراً برای مسئول دفتر قابل مشاهده خواهد بود."
+              hint="پاسخ شما به همراه فایل پیوست احتمالی فوراً برای کارشناس دفتر قابل مشاهده خواهد بود."
             >
               {(props) => (
                 <textarea
@@ -589,7 +605,6 @@ export function CustomerRequestDetailPage() {
               files={replyFiles}
               onChange={setReplyFiles}
               maxUploadMb={publicConfig.maxUploadMb}
-                allowedMimeTypes={publicConfig.allowedUploadMimes}
               uploadProgress={replyProgress}
             />
 
@@ -654,7 +669,7 @@ export function CustomerRequestDetailPage() {
       <ConfirmDialog
         open={cancelModalOpen}
         title="ثبت درخواست لغو پرونده"
-        description="توجه داشته باشید که ثبت درخواست لغو به‌منزله لغو فوری نیست؛ مسئول دفتر وضعیت پیشرفت کار را بررسی کرده و درباره موافقت یا عدم موافقت با لغو تصمیم می‌گیرد."
+        description="توجه داشته باشید که ثبت درخواست لغو به‌منزله لغو فوری نیست؛ کارشناس دفتر وضعیت پیشرفت کار را بررسی کرده و درباره موافقت یا عدم موافقت با لغو تصمیم‌گیری می‌کند."
         confirmLabel="ارسال درخواست لغو به دفتر"
         danger
         loading={submittingCancel}

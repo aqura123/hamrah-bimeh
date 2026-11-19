@@ -1,13 +1,11 @@
 import React, { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Building2, CheckCircle2, ShieldAlert, UserPlus } from 'lucide-react';
+import { ArrowLeft, Building2, CheckCircle2, UserPlus } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { Alert, Breadcrumb, Card, PageTitle } from '../../components/ui/Primitives';
-import { getServiceAction } from '../../lib/navigation';
+import { Breadcrumb, Card, PageTitle } from '../../components/ui/Primitives';
 
 export function EmployersServicePage() {
   const { user } = useApp();
-  const serviceAction = getServiceAction(user, '/portal/requests/new/workshop', 'ثبت درخواست کارگاه');
 
   useEffect(() => {
     document.title = 'خدمات کارفرمایان و کارگاه‌ها | همراه بیمه';
@@ -25,10 +23,10 @@ export function EmployersServicePage() {
         documentTitle="خدمات کارفرمایان و کارگاه‌ها"
         actions={
           <Link
-            to={serviceAction.to}
+            to={user ? '/portal/requests/new/workshop' : '/login'}
             className="inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-control text-sm font-semibold bg-brand-navy text-white hover:bg-brand-navy-dark"
           >
-            <span>{serviceAction.label}</span>
+            <span>{user ? 'ثبت درخواست کارگاه' : 'ورود برای ثبت درخواست'}</span>
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />
           </Link>
         }
@@ -57,7 +55,7 @@ export function EmployersServicePage() {
             </li>
             <li className="flex items-start gap-2">
               <CheckCircle2 className="w-4 h-4 text-brand-blue shrink-0 mt-1" aria-hidden="true" />
-              <span>دریافت فایل‌های خروجی ثبت‌شده توسط دفتر در همان پرونده درخواست</span>
+              <span>دریافت رسید و خروجی نهایی دفتر در همان پرونده درخواست</span>
             </li>
           </ul>
         </Card>
@@ -83,18 +81,6 @@ export function EmployersServicePage() {
           </p>
         </Card>
       </div>
-
-      <Alert variant="warning" title="هشدار امنیتی: رمز عبور سامانه تأمین اجتماعی را ارسال نکنید">
-        <div className="flex items-start gap-2">
-          <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 hidden" aria-hidden="true" />
-          <p>
-            وب‌سایت همراه بیمه به‌هیچ‌وجه رمز عبور ورود به سامانه{' '}
-            <span className="ltr-code">es.tamin.ir</span> را درخواست، دریافت یا ذخیره نمی‌کند و به
-            آن سامانه متصل نیست. لطفاً از نوشتن هرگونه رمز عبور در بخش توضیحات یا پیام‌ها خودداری
-            فرمایید.
-          </p>
-        </div>
-      </Alert>
     </div>
   );
 }

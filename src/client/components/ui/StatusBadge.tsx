@@ -7,6 +7,7 @@ import {
   FileSearch,
   HelpCircle,
   Wrench,
+  Wallet,
 } from 'lucide-react';
 import { REQUEST_STATUS_LABELS, type RequestStatus } from '@shared/domain';
 
@@ -27,6 +28,10 @@ export function StatusBadge({ status }: { status: RequestStatus }) {
     in_progress: {
       className: 'bg-status-info-bg text-brand-navy border-brand-navy/30',
       icon: <Wrench className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />,
+    },
+    awaiting_payment: {
+      className: 'bg-status-warning-bg text-status-warning border-status-warning/40',
+      icon: <Wallet className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />,
     },
     completed: {
       className: 'bg-status-success-bg text-status-success border-brand-turquoise/60',

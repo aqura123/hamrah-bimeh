@@ -10,6 +10,8 @@ export interface AppConfig {
   host: string;
   databaseUrl: string;
   sessionSecret: string;
+  cardEncryptionKey: string;
+  portalCredentialKey: string;
   sessionTtlHours: number;
   previewIframeCompat: boolean;
   frameAncestors: string;
@@ -21,7 +23,7 @@ export interface AppConfig {
   maxUploadBytes: number;
   maxUploadMb: number;
   allowedUploadMimes: readonly string[];
-  antivirusMode: 'disabled';
+  antivirusMode: 'disabled' | 'clamav_command';
   publicOfficeContact: {
     title: string;
     address: string | null;
@@ -39,105 +41,48 @@ const INSECURE_SECRETS = new Set([
   'dev_sandbox_only_secret_9f8e7d6c5b4a3210_hamrah_bimeh_2026',
 ]);
 
-function readFiniteNumber(name: string, rawValue: string | undefined, fallback: number): number {
-  const normalized = rawValue?.trim();
-  if (!normalized) return fallback;
-  const value = Number(normalized);
-  if (!Number.isFinite(value)) {
-    throw new Error(`CONFIG ERROR: ${name} must be a valid finite number.`);
-  }
-  return value;
-}
-
-function isWithinOrEqual(candidatePath: string, parentPath: string): boolean {
-  const relativePath = path.relative(parentPath, candidatePath);
-  return (
-    relativePath === '' ||
-    (relativePath !== '..' &&
-      !relativePath.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relativePath))
-  );
-}
-
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const rawEnv = env.NODE_ENV ?? 'development';
   const nodeEnv: AppConfig['nodeEnv'] =
-    rawEnv === 'production' || rawEnv === 'test' || rawEnv === 'development'
-      ? rawEnv
-      : 'development';
+    rawEnv === 'production' || rawEnv === 'test' ? rawEnv : 'development';
 
-  const port = readFiniteNumber('PORT', env.PORT, 3000);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('CONFIG ERROR: PORT must be an integer between 1 and 65535.');
-  }
+  const port = Number(env.PORT ?? 3000);
   const host = env.HOST ?? '0.0.0.0';
   const databaseUrl = env.DATABASE_URL ?? 'pglite://./storage/pgdata';
   const sessionSecret =
     env.SESSION_SECRET ??
     (nodeEnv === 'test' ? 'test_only_session_secret_0123456789abcdef0123456789abcdef' : '');
-  const sessionTtlHours = Math.max(
-    1,
-    Math.min(168, readFiniteNumber('SESSION_TTL_HOURS', env.SESSION_TTL_HOURS, 12)),
-  );
+  const cardEncryptionKey = env.CARD_ENCRYPTION_KEY ?? (nodeEnv === 'test' ? 'a'.repeat(64) : '');
+  const portalCredentialKey =
+    env.PORTAL_CREDENTIAL_KEY ?? (nodeEnv === 'test' ? 'b'.repeat(64) : '');
+  const sessionTtlHours = Math.max(1, Math.min(168, Number(env.SESSION_TTL_HOURS ?? 12)));
   const previewIframeCompat = env.PREVIEW_IFRAME_COMPAT === 'true';
   const frameAncestors = (env.FRAME_ANCESTORS ?? "'none'").trim();
 
   const businessTimezone = env.BUSINESS_TIMEZONE ?? 'Asia/Tehran';
-  const rawCurrency = (env.CURRENCY_UNIT ?? 'TOMAN').trim().toUpperCase();
-  if (!(CURRENCY_UNITS as readonly string[]).includes(rawCurrency)) {
-    throw new Error('CONFIG ERROR: CURRENCY_UNIT must be either TOMAN or RIAL.');
-  }
-  const currencyUnit = rawCurrency as CurrencyUnit;
+  const rawCurrency = (env.CURRENCY_UNIT ?? 'TOMAN').toUpperCase();
+  const currencyUnit: CurrencyUnit = (CURRENCY_UNITS as readonly string[]).includes(rawCurrency)
+    ? (rawCurrency as CurrencyUnit)
+    : 'TOMAN';
 
-  const rawInitialMode = env.INITIAL_PASSWORD_MODE ?? 'generated';
-  if (rawInitialMode !== 'generated' && rawInitialMode !== 'national_id') {
-    throw new Error(
-      'CONFIG ERROR: INITIAL_PASSWORD_MODE must be either generated or national_id.',
-    );
-  }
-  const initialPasswordMode: AppConfig['initialPasswordMode'] = rawInitialMode;
+  const rawInitialMode = env.INITIAL_PASSWORD_MODE ?? 'national_id';
+  const initialPasswordMode: AppConfig['initialPasswordMode'] =
+    rawInitialMode === 'generated' ? 'generated' : 'national_id';
 
-  const incompleteAlertHours = Math.max(
-    1,
-    readFiniteNumber('INCOMPLETE_ALERT_HOURS', env.INCOMPLETE_ALERT_HOURS, 72),
-  );
+  const incompleteAlertHours = Math.max(1, Number(env.INCOMPLETE_ALERT_HOURS ?? 72));
 
   const privateStorageDir = path.resolve(env.PRIVATE_STORAGE_DIR ?? './storage/uploads');
-  const maxUploadMb = Math.max(
-    1,
-    Math.min(50, readFiniteNumber('MAX_UPLOAD_MB', env.MAX_UPLOAD_MB, 10)),
-  );
+  const maxUploadMb = Math.max(1, Math.min(50, Number(env.MAX_UPLOAD_MB ?? 10)));
   const maxUploadBytes = maxUploadMb * 1024 * 1024;
 
-  const supportedUploadMimes = [
-    'application/pdf',
-    'image/jpeg',
-    'image/png',
-    'image/webp',
-  ] as const;
   const allowedUploadMimes = (
     env.ALLOWED_UPLOAD_MIMES ?? 'application/pdf,image/jpeg,image/png,image/webp'
   )
     .split(',')
     .map((m) => m.trim().toLowerCase())
     .filter(Boolean);
-  const unsupportedUploadMimes = allowedUploadMimes.filter(
-    (mime) => !(supportedUploadMimes as readonly string[]).includes(mime),
-  );
-  if (allowedUploadMimes.length === 0 || unsupportedUploadMimes.length > 0) {
-    throw new Error(
-      'CONFIG ERROR: ALLOWED_UPLOAD_MIMES must contain only supported types: application/pdf, image/jpeg, image/png, image/webp.',
-    );
-  }
 
-  // File scanning is not implemented in this version. Never imply that setting an
-  // environment flag enables antivirus scanning when no scanner is actually run.
-  if (env.ANTIVIRUS_MODE && env.ANTIVIRUS_MODE !== 'disabled') {
-    throw new Error(
-      'CONFIG ERROR: Antivirus scanning is not implemented in this version. Keep ANTIVIRUS_MODE=disabled until scanner integration is added and tested.',
-    );
-  }
-  const antivirusMode: AppConfig['antivirusMode'] = 'disabled';
+  const antivirusMode = env.ANTIVIRUS_MODE === 'clamav_command' ? 'clamav_command' : 'disabled';
 
   // Production Fail-Fast Safety Checks
   if (nodeEnv === 'production') {
@@ -149,8 +94,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const publicClientDir = path.resolve('./dist/client');
     const publicStaticDir = path.resolve('./public');
     if (
-      isWithinOrEqual(privateStorageDir, publicClientDir) ||
-      isWithinOrEqual(privateStorageDir, publicStaticDir)
+      privateStorageDir.startsWith(publicClientDir) ||
+      privateStorageDir.startsWith(publicStaticDir)
     ) {
       throw new Error(
         'FATAL SECURITY CONFIG: PRIVATE_STORAGE_DIR cannot be inside a public static directory.',
@@ -159,6 +104,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (previewIframeCompat) {
       throw new Error(
         'FATAL SECURITY CONFIG: PREVIEW_IFRAME_COMPAT must be false in production deployments.',
+      );
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(cardEncryptionKey) || /^(.)\1{63}$/.test(cardEncryptionKey)) {
+      throw new Error(
+        'FATAL SECURITY CONFIG: CARD_ENCRYPTION_KEY must be 32 random bytes in hexadecimal.',
+      );
+    }
+    if (
+      !/^[0-9a-fA-F]{64}$/.test(portalCredentialKey) ||
+      /^(.)\1{63}$/.test(portalCredentialKey) ||
+      portalCredentialKey.toLowerCase() === cardEncryptionKey.toLowerCase()
+    ) {
+      throw new Error(
+        'FATAL SECURITY CONFIG: PORTAL_CREDENTIAL_KEY must be an independent 32-byte random hex key.',
       );
     }
   }
@@ -174,6 +133,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host,
     databaseUrl,
     sessionSecret,
+    cardEncryptionKey,
+    portalCredentialKey,
     sessionTtlHours,
     previewIframeCompat,
     frameAncestors,

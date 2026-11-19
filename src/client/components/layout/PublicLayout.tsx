@@ -61,13 +61,7 @@ export function SiteHeader() {
               className="inline-flex items-center gap-2 min-h-[42px] px-4 py-2 rounded-control text-sm font-semibold bg-brand-navy text-white hover:bg-brand-navy-dark transition-colors"
             >
               <UserCheck className="w-4 h-4" aria-hidden="true" />
-              <span>
-                {user.forcePasswordChange
-                  ? 'تغییر رمز عبور'
-                  : user.role === 'office_admin'
-                    ? 'ورود به پنل دفتر'
-                    : 'ورود به پرتال مشتری'}
-              </span>
+              <span>{user.role === 'office_admin' ? 'ورود به پنل دفتر' : 'ورود به پرتال من'}</span>
             </Link>
           ) : (
             <Link
@@ -130,11 +124,9 @@ export function SiteHeader() {
               <LogIn className="w-4 h-4" aria-hidden="true" />
               <span>
                 {user
-                  ? user.forcePasswordChange
-                    ? 'تغییر رمز عبور'
-                    : user.role === 'office_admin'
-                      ? 'ورود به پنل دفتر'
-                      : 'ورود به پرتال مشتری'
+                  ? user.role === 'office_admin'
+                    ? 'ورود به پنل دفتر'
+                    : 'ورود به پرتال من'
                   : 'ورود به حساب کاربری'}
               </span>
             </Link>
@@ -186,7 +178,7 @@ export function SiteFooter() {
               </li>
               <li>
                 <Link to="/login" className="hover:text-white hover:underline">
-                  ورود مشتریان و مدیر دفتر
+                  ورود مشتریان و پرسنل دفتر
                 </Link>
               </li>
             </ul>
@@ -197,8 +189,8 @@ export function SiteFooter() {
             <p className="text-xs text-white/80 leading-relaxed">
               این وب‌سایت یک پرتال مدیریت درخواست‌های خدماتی دفتر است؛ مرجع رسمی تصمیم‌گیری بیمه‌ای
               محسوب نمی‌شود، درگاه پرداخت آنلاین ندارد و هیچ‌گونه اتصال مستقیم یا وابستگی سازمانی به
-              سازمان تأمین اجتماعی یا سامانه es.tamin.ir ندارد. هرگز رمز عبور درگاه‌های بیرونی خود
-              را در این سامانه وارد نکنید.
+              سازمان تأمین اجتماعی یا سامانه es.tamin.ir ندارد. درخواست‌ها توسط دفتر به‌صورت دستی
+              پیگیری می‌شوند.
             </p>
           </div>
         </div>

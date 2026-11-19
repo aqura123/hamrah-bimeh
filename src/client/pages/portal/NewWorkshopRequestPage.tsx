@@ -1,10 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Building2, CheckCircle2, Eye, Send, ShieldAlert, UserPlus } from 'lucide-react';
+import { Building2, CheckCircle2, Eye, Send, UserPlus } from 'lucide-react';
 import { maskNationalId } from '@shared/iran-identifiers';
 import { formatJalaliPeriod, toPersianDigits } from '@shared/jalali';
 import { createWorkshopRequestSchema } from '@shared/validation';
 import { useApp } from '../../context/AppContext';
+import { PortalPasswordField } from '../../components/requests/PortalPasswordField';
+import {
+  ContactSelection,
+  ContactsReview,
+  useRequestContacts,
+} from '../../components/requests/ContactSelection';
 import { ApiError, apiRequest, apiUploadFormData } from '../../lib/api';
 import {
   FileUploadBox,
@@ -28,10 +34,12 @@ interface SavedWorkshopOption {
   workshopCode: string;
   contactFullName: string;
   maskedContactNationalId: string;
+  hasPortalPassword: boolean;
 }
 
 export function NewWorkshopRequestPage() {
   const { publicConfig } = useApp();
+  const contacts = useRequestContacts();
   const [searchParams] = useSearchParams();
   const preselectedWorkshopId = searchParams.get('workshopId') ?? '';
   const initialModeParam = searchParams.get('mode');
@@ -47,6 +55,7 @@ export function NewWorkshopRequestPage() {
   const [workshopCode, setWorkshopCode] = useState('');
   const [contactFullName, setContactFullName] = useState('');
   const [contactNationalId, setContactNationalId] = useState('');
+  const [portalPassword, setPortalPassword] = useState('');
 
   // Monthly Period & General Attachments
   const [jalaliYear, setJalaliYear] = useState(publicConfig.currentJalaliPeriod.jalaliYear);
@@ -107,8 +116,15 @@ export function NewWorkshopRequestPage() {
   }, [initialModeParam, preselectedWorkshopId]);
 
   const buildPayload = () => ({
+    cardSelection: contacts.cardSelection,
+    mobileSelection: contacts.mobileSelection,
     workshopMode,
     workshopId: workshopMode === 'existing' ? selectedWorkshopId : undefined,
+    initialPortalPassword:
+      workshopMode === 'existing' &&
+      !savedWorkshops.find((w) => w.id === selectedWorkshopId)?.hasPortalPassword
+        ? portalPassword
+        : undefined,
     newWorkshop:
       workshopMode === 'new'
         ? {
@@ -116,6 +132,7 @@ export function NewWorkshopRequestPage() {
             workshopCode,
             contactFullName,
             contactNationalId,
+            portalPassword,
           }
         : undefined,
     jalaliYear,
@@ -136,6 +153,12 @@ export function NewWorkshopRequestPage() {
     setFormError(null);
     setFieldErrors({});
     setDuplicateWarning(null);
+
+    const contactError = contacts.validate();
+    if (contactError) {
+      setFormError(contactError);
+      return;
+    }
 
     const parsed = createWorkshopRequestSchema.safeParse(buildPayload());
     if (!parsed.success) {
@@ -196,6 +219,8 @@ export function NewWorkshopRequestPage() {
         if (hasFiles) setUploadProgress(pct);
       });
 
+      contacts.clearSensitive();
+      setPortalPassword('');
       setCreatedResult({
         id: res.request.id,
         referenceCode: res.request.referenceCode,
@@ -289,16 +314,11 @@ export function NewWorkshopRequestPage() {
         subtitle="انتخاب کارگاه، تعیین ماه بیمه‌ای شمسی و معرفی اختیاری بیمه‌شده جدید"
       />
 
-      {/* Explicit security notice against disclosing es.tamin.ir passwords */}
-      <Alert variant="info" title="یادآوری امنیتی مهم">
-        <div className="flex items-start gap-2">
-          <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 hidden" aria-hidden="true" />
-          <span>
-            این سامانه هیچ‌گونه فیلدی برای رمز عبور <span className="ltr-code">es.tamin.ir</span>{' '}
-            ندارد. لطفاً رمز عبور درگاه تامین اجتماعی خود را در بخش توضیحات نیز وارد نکنید.
-          </span>
-        </div>
-      </Alert>
+      {publicConfig.isDemo && (
+        <Alert variant="warning">
+          این پیش‌نمایش آزمایشی است؛ رمز واقعی سامانه تأمین اجتماعی را وارد نکنید.
+        </Alert>
+      )}
 
       {formError && <Alert variant="error">{formError}</Alert>}
 
@@ -319,7 +339,10 @@ export function NewWorkshopRequestPage() {
               >
                 <button
                   type="button"
-                  onClick={() => setWorkshopMode('existing')}
+                  onClick={() => {
+                    setPortalPassword('');
+                    setWorkshopMode('existing');
+                  }}
                   aria-pressed={workshopMode === 'existing'}
                   className={`p-3.5 rounded-control border text-right text-sm font-semibold transition-colors ${
                     workshopMode === 'existing'
@@ -331,7 +354,10 @@ export function NewWorkshopRequestPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setWorkshopMode('new')}
+                  onClick={() => {
+                    setPortalPassword('');
+                    setWorkshopMode('new');
+                  }}
                   aria-pressed={workshopMode === 'new'}
                   className={`p-3.5 rounded-control border text-right text-sm font-semibold transition-colors ${
                     workshopMode === 'new'
@@ -351,7 +377,10 @@ export function NewWorkshopRequestPage() {
                     <select
                       {...props}
                       value={selectedWorkshopId}
-                      onChange={(e) => setSelectedWorkshopId(e.target.value)}
+                      onChange={(e) => {
+                        setPortalPassword('');
+                        setSelectedWorkshopId(e.target.value);
+                      }}
                       className={INPUT_CLASS}
                     >
                       {savedWorkshops.map((w) => (
@@ -382,6 +411,18 @@ export function NewWorkshopRequestPage() {
                       )
                     </p>
                   </div>
+                )}
+                {chosenSavedWorkshop?.hasPortalPassword && (
+                  <p className="text-sm text-brand-muted">
+                    رمز پرونده ذخیره شده است؛ تغییر آن فقط از طریق دفتر انجام می‌شود.
+                  </p>
+                )}
+                {chosenSavedWorkshop && !chosenSavedWorkshop.hasPortalPassword && (
+                  <PortalPasswordField
+                    value={portalPassword}
+                    onChange={setPortalPassword}
+                    error={fieldErrors.initialPortalPassword}
+                  />
                 )}
               </div>
             ) : (
@@ -457,6 +498,13 @@ export function NewWorkshopRequestPage() {
                     />
                   )}
                 </FormField>
+                <div className="sm:col-span-2">
+                  <PortalPasswordField
+                    value={portalPassword}
+                    onChange={setPortalPassword}
+                    error={fieldErrors['newWorkshop.portalPassword']}
+                  />
+                </div>
               </div>
             )}
           </Card>
@@ -495,11 +543,10 @@ export function NewWorkshopRequestPage() {
 
             <FileUploadBox
               label="فایل‌های مربوط به لیست ماهانه (اختیاری)"
-              hint="مانند فایل لیست کارکرد ماهانه کارگاه، در یکی از قالب‌های مجاز نمایش‌داده‌شده در فرم"
+              hint="مانند فایل PDF یا تصویر لیست کارکرد ماهانه کارگاه"
               files={attachments}
               onChange={setAttachments}
               maxUploadMb={publicConfig.maxUploadMb}
-              allowedMimeTypes={publicConfig.allowedUploadMimes}
             />
           </Card>
 
@@ -595,11 +642,12 @@ export function NewWorkshopRequestPage() {
                   files={employeeDocuments}
                   onChange={setEmployeeDocuments}
                   maxUploadMb={publicConfig.maxUploadMb}
-              allowedMimeTypes={publicConfig.allowedUploadMimes}
                 />
               </div>
             )}
           </Card>
+
+          <ContactSelection state={contacts} />
 
           <div className="flex items-center justify-end gap-3">
             <Link
@@ -684,6 +732,8 @@ export function NewWorkshopRequestPage() {
               </dd>
             </div>
           </dl>
+
+          <ContactsReview state={contacts} />
 
           {uploadProgress !== null && (
             <div className="space-y-1" role="status" aria-live="polite">

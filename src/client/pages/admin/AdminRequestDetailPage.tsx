@@ -22,6 +22,8 @@ import {
 import { formatMobileDisplay } from '@shared/iran-identifiers';
 import { formatJalaliDateTime, formatJalaliPeriod, toPersianDigits } from '@shared/jalali';
 import { useApp } from '../../context/AppContext';
+import { PortalPasswordField } from '../../components/requests/PortalPasswordField';
+import { CopyableCredentialRow } from '../../components/requests/CopyableCredentialRow';
 import { ApiError, apiRequest, apiUploadFormData, downloadProtectedFile } from '../../lib/api';
 import {
   ConfirmDialog,
@@ -71,7 +73,7 @@ export function AdminRequestDetailPage() {
 
   // Final Amount Controls
   const [amountInput, setAmountInput] = useState('');
-  const [amountNote, setAmountNote] = useState('');
+  const [paymentCardNumber, setPaymentCardNumber] = useState('');
   const [submittingAmount, setSubmittingAmount] = useState(false);
 
   // Office Output File Upload Controls
@@ -90,6 +92,9 @@ export function AdminRequestDetailPage() {
   // General Reply Message
   const [replyText, setReplyText] = useState('');
   const [sendingReply, setSendingReply] = useState(false);
+  const [savingMobileVerification, setSavingMobileVerification] = useState(false);
+  const [newPortalPassword, setNewPortalPassword] = useState('');
+  const [savingPortalPassword, setSavingPortalPassword] = useState(false);
 
   const loadDetail = useCallback(async () => {
     if (!requestId) return;
@@ -100,6 +105,7 @@ export function AdminRequestDetailPage() {
       setDetail(res);
       setSelectedNextStatus(res.request.allowedNextStatuses[0] ?? '');
       setAmountInput(res.request.finalAmount !== null ? String(res.request.finalAmount) : '');
+      setPaymentCardNumber(res.request.paymentCardNumber ?? '');
       setAwaitingNote(res.request.awaitingCustomerInfoNote ?? '');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'خطا در بارگذاری پرونده درخواست.');
@@ -111,6 +117,31 @@ export function AdminRequestDetailPage() {
   useEffect(() => {
     loadDetail();
   }, [loadDetail]);
+
+  const savePortalPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!requestId || savingPortalPassword) return;
+    setSavingPortalPassword(true);
+    try {
+      await apiRequest(`/api/requests/${requestId}/profile-portal-password`, {
+        method: 'PATCH',
+        body: { password: newPortalPassword },
+      });
+      setNewPortalPassword('');
+      setActionBanner({
+        type: 'success',
+        text: 'رمز پرونده به‌روزرسانی شد و در همه درخواست‌های مرتبط استفاده می‌شود.',
+      });
+      await loadDetail();
+    } catch (err) {
+      setActionBanner({
+        type: 'error',
+        text: err instanceof ApiError ? err.message : 'خطا در ثبت رمز.',
+      });
+    } finally {
+      setSavingPortalPassword(false);
+    }
+  };
 
   const executeStatusChange = async () => {
     if (!requestId || !selectedNextStatus) return;
@@ -193,13 +224,12 @@ export function AdminRequestDetailPage() {
         method: 'POST',
         body: {
           finalAmount: amountInput,
-          note: amountNote,
+          paymentCardNumber,
         },
       });
-      setAmountNote('');
       setActionBanner({
         type: 'success',
-        text: 'مبلغ نهایی خدمات با موفقیت ثبت و به مشتری اطلاع‌رسانی شد.',
+        text: 'مبلغ و شماره کارت واریز ثبت شدند.',
       });
       await loadDetail();
     } catch (err) {
@@ -299,6 +329,58 @@ export function AdminRequestDetailPage() {
     }
   };
 
+  const toggleMobileVerification = async () => {
+    if (!requestId || !detail?.mobileDetails || savingMobileVerification) return;
+    const verified = !detail.mobileDetails.verified;
+    setActionBanner(null);
+    setSavingMobileVerification(true);
+    try {
+      const result = await apiRequest<{ verified: boolean }>(
+        `/api/requests/${requestId}/mobile-verification`,
+        { method: 'PATCH', body: { verified } },
+      );
+      setDetail((current) =>
+        current?.mobileDetails
+          ? { ...current, mobileDetails: { ...current.mobileDetails, verified: result.verified } }
+          : current,
+      );
+      setActionBanner({
+        type: 'success',
+        text: 'وضعیت شماره برای همه درخواست‌های مرتبط تغییر کرد.',
+      });
+    } catch (err) {
+      setActionBanner({
+        type: 'error',
+        text: err instanceof ApiError ? err.message : 'خطا در تغییر وضعیت شماره.',
+      });
+    } finally {
+      setSavingMobileVerification(false);
+    }
+  };
+
+  const deleteSavedContact = async (kind: 'card' | 'mobile') => {
+    if (
+      !requestId ||
+      !window.confirm(
+        'این مورد از این درخواست و فهرست انتخاب‌های ذخیره‌شده حذف می‌شود، اما در دیگر درخواست‌های ثبت‌شده باقی می‌ماند. ادامه می‌دهید؟',
+      )
+    )
+      return;
+    try {
+      await apiRequest(`/api/requests/${requestId}/saved-contacts/${kind}`, { method: 'DELETE' });
+      setActionBanner({
+        type: 'success',
+        text: 'اطلاعات از این درخواست و فهرست ذخیره‌شده حذف شد؛ سایر درخواست‌های ثبت‌شده بدون تغییر باقی ماندند.',
+      });
+      await loadDetail();
+    } catch (err) {
+      setActionBanner({
+        type: 'error',
+        text: err instanceof ApiError ? err.message : 'خطا در حذف اطلاعات.',
+      });
+    }
+  };
+
   if (loading) return <LoadingState label="در حال بارگذاری جزئیات مدیریتی درخواست..." />;
   if (error || !detail) {
     return <ErrorState message={error ?? 'درخواست یافت نشد.'} onRetry={loadDetail} />;
@@ -328,11 +410,101 @@ export function AdminRequestDetailPage() {
               className="inline-flex items-center gap-2 min-h-[40px] px-4 py-2 rounded-control text-xs font-semibold bg-brand-surface border border-brand-border text-brand-navy hover:bg-brand-subtle"
             >
               <User className="w-4 h-4" aria-hidden="true" />
+
               <span>پرونده مشتری ({detail.customer.fullName})</span>
             </Link>
           ) : undefined
         }
       />
+
+      <Card className="p-6 space-y-5">
+        <h2 className="text-base font-bold text-brand-navy">
+          اطلاعات کارت و شماره موبایل انتخاب‌شده
+        </h2>
+        {detail.cardDetails ? (
+          <div className="space-y-2 text-sm border-b border-brand-border pb-4">
+            <p>
+              <strong>بانک: </strong>
+              {detail.cardDetails.bankName}
+            </p>
+            <p>
+              <strong>دارنده کارت: </strong>
+              {detail.cardDetails.holderName}
+            </p>
+            <p>
+              <strong>شماره کارت: </strong>
+              <span dir="ltr" className="ltr-code">
+                {detail.cardDetails.number}
+              </span>
+            </p>
+            <p>
+              <strong>CVV2: </strong>
+              <span dir="ltr" className="ltr-code">
+                {detail.cardDetails.cvv2}
+              </span>
+            </p>
+            <p>
+              <strong>انقضا (ماه / سال): </strong>
+              <span dir="ltr" className="ltr-code">
+                {detail.cardDetails.expiryMonth} / {detail.cardDetails.expiryYear}
+              </span>
+            </p>
+            <button
+              type="button"
+              className="text-red-700 underline"
+              onClick={() => void deleteSavedContact('card')}
+            >
+              حذف این کارت از درخواست و فهرست ذخیره‌شده
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-brand-muted">اطلاعات کارت ثبت نشده یا حذف شده است.</p>
+        )}
+        {detail.mobileDetails ? (
+          <div className="space-y-2 text-sm">
+            <p>
+              <strong>صاحب شماره: </strong>
+              {detail.mobileDetails.ownerName}
+            </p>
+            <p>
+              <strong>شماره موبایل: </strong>
+              <span dir="ltr" className="ltr-code">
+                {detail.mobileDetails.mobile}
+              </span>
+            </p>
+            <p>
+              <strong>وضعیت تأیید: </strong>
+              {detail.mobileDetails.verified ? 'تأییدشده' : 'تأییدنشده'}
+            </p>
+            <p className="text-xs text-brand-muted">
+              این تأیید به‌صورت دستی توسط دفتر انجام می‌شود و در همه درخواست‌های مرتبط با این شماره
+              مشترک است؛ پیامک تأیید ارسال نمی‌شود.
+            </p>
+            <button
+              type="button"
+              disabled={savingMobileVerification}
+              className="inline-flex items-center min-h-[40px] px-4 py-2 rounded-control border border-brand-navy text-brand-navy font-semibold disabled:opacity-50"
+              onClick={() => void toggleMobileVerification()}
+            >
+              {savingMobileVerification
+                ? 'در حال ثبت...'
+                : detail.mobileDetails.verified
+                  ? 'تغییر به تأییدنشده'
+                  : 'تغییر به تأییدشده'}
+            </button>
+            <br />
+            <button
+              type="button"
+              className="text-red-700 underline"
+              onClick={() => void deleteSavedContact('mobile')}
+            >
+              حذف این شماره از درخواست و فهرست ذخیره‌شده
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-brand-muted">شماره موبایل ثبت نشده یا حذف شده است.</p>
+        )}
+      </Card>
 
       {actionBanner && (
         <Alert variant={actionBanner.type === 'success' ? 'success' : 'error'}>
@@ -413,12 +585,6 @@ export function AdminRequestDetailPage() {
                     <dt className="text-xs text-brand-muted">نام کامل راننده:</dt>
                     <dd className="font-bold text-brand-text mt-0.5">{detail.driver.fullName}</dd>
                   </div>
-                  <div>
-                    <dt className="text-xs text-brand-muted">کد ملی راننده (ویژه اقدام دفتر):</dt>
-                    <dd className="ltr-code font-bold text-brand-navy mt-0.5">
-                      {toPersianDigits(detail.driver.nationalId ?? detail.driver.maskedNationalId)}
-                    </dd>
-                  </div>
                 </>
               )}
 
@@ -440,18 +606,31 @@ export function AdminRequestDetailPage() {
                     <dt className="text-xs text-brand-muted">کارفرما / رابط بیمه:</dt>
                     <dd className="text-brand-text mt-0.5">{detail.workshop.contactFullName}</dd>
                   </div>
-                  <div>
-                    <dt className="text-xs text-brand-muted">کد ملی رابط:</dt>
-                    <dd className="ltr-code font-bold text-brand-navy mt-0.5">
-                      {toPersianDigits(
-                        detail.workshop.contactNationalId ??
-                          detail.workshop.maskedContactNationalId,
-                      )}
-                    </dd>
-                  </div>
                 </>
               )}
             </dl>
+            {(detail.driver || detail.workshop) && (
+              <div className="space-y-3 pt-3 border-t border-brand-border">
+                {[
+                  {
+                    label: 'کد ملی',
+                    value: detail.driver?.nationalId ?? detail.workshop?.contactNationalId,
+                  },
+                  {
+                    label: 'رمز سامانه تأمین اجتماعی',
+                    value: detail.driver?.portalPassword ?? detail.workshop?.portalPassword,
+                  },
+                ].map(({ label, value }) => (
+                  <CopyableCredentialRow key={label} label={label} value={value} />
+                ))}
+                <form onSubmit={savePortalPassword} className="space-y-3">
+                  <PortalPasswordField value={newPortalPassword} onChange={setNewPortalPassword} />
+                  <PrimaryButton type="submit" loading={savingPortalPassword}>
+                    ثبت / تغییر رمز پرونده
+                  </PrimaryButton>
+                </form>
+              </div>
+            )}
 
             {detail.employeeSubmissions.length > 0 && (
               <div className="pt-3 border-t border-brand-border space-y-2">
@@ -537,7 +716,6 @@ export function AdminRequestDetailPage() {
                 files={outputFiles}
                 onChange={setOutputFiles}
                 maxUploadMb={publicConfig.maxUploadMb}
-                allowedMimeTypes={publicConfig.allowedUploadMimes}
                 uploadProgress={outputProgress}
               />
               <FormField label="توضیح همراه فایل خروجی (اختیاری)">
@@ -705,20 +883,27 @@ export function AdminRequestDetailPage() {
                     />
                   )}
                 </FormField>
-                <FormField label="توضیح مبلغ (اختیاری)">
+                <FormField
+                  label="شماره کارت جهت واریز"
+                  required
+                  hint="فقط شماره کارت مقصد را وارد کنید؛ CVV2 یا رمز لازم نیست."
+                >
                   {(props) => (
                     <input
                       {...props}
                       type="text"
-                      value={amountNote}
-                      onChange={(e) => setAmountNote(e.target.value)}
-                      placeholder="یادداشت اختیاری برای مشتری..."
-                      className={INPUT_CLASS}
+                      inputMode="numeric"
+                      dir="ltr"
+                      autoComplete="off"
+                      value={paymentCardNumber}
+                      onChange={(e) => setPaymentCardNumber(e.target.value)}
+                      placeholder="شماره کارت ۱۶ رقمی"
+                      className={`${INPUT_CLASS} text-left`}
                     />
                   )}
                 </FormField>
                 <PrimaryButton type="submit" loading={submittingAmount} className="w-full">
-                  ثبت / به‌روزرسانی مبلغ نهایی
+                  ثبت / به‌روزرسانی مبلغ و شماره کارت
                 </PrimaryButton>
               </form>
             )}

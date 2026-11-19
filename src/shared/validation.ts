@@ -7,6 +7,7 @@ import {
   stripInvisibleBidiMarks,
 } from './iran-identifiers.js';
 import { normalizeDigits } from './jalali.js';
+import { isValidCardNumber } from './banks.js';
 import { INITIAL_PASSWORD_MODES, REQUEST_STATUSES, REQUEST_TYPES } from './domain.js';
 
 export const iranianMobileSchema = z
@@ -75,8 +76,7 @@ export const insuranceNumberSchema = z
   });
 
 /**
- * Rejects text that appears to disclose an es.tamin.ir password so the system
- * never stores external portal credentials even inside free-form notes.
+ * Keeps portal credentials out of free-form notes; the dedicated field stores them encrypted.
  */
 const PORTAL_CREDENTIAL_PATTERN =
   /(es\.tamin\.ir\s*[:=-]|رمز\s*(عبور\s*)?(سامانه\s*)?تامین\s*اجتماعی\s*[:=-]|پسورد\s*تامین\s*اجتماعی\s*[:=-])/i;
@@ -90,8 +90,7 @@ export const explanationSchema = z
   .trim()
   .max(3000, 'متن توضیحات نباید بیشتر از ۳۰۰۰ کاراکتر باشد.')
   .refine((v) => !looksLikePortalPasswordDisclosure(v), {
-    message:
-      'لطفاً رمز عبور سامانه تامین اجتماعی (es.tamin.ir) را در متن توضیحات وارد نکنید. این سامانه رمز درگاه‌های بیرونی را دریافت یا ذخیره نمی‌کند.',
+    message: 'رمز سامانه را فقط در فیلد مخصوص رمز وارد کنید، نه در متن توضیحات.',
   });
 
 export const requiredExplanationSchema = z
@@ -100,7 +99,7 @@ export const requiredExplanationSchema = z
   .min(3, 'لطفاً توضیح روشن (حداقل ۳ کاراکتر) وارد کنید.')
   .max(3000, 'متن توضیحات نباید بیشتر از ۳۰۰۰ کاراکتر باشد.')
   .refine((v) => !looksLikePortalPasswordDisclosure(v), {
-    message: 'لطفاً رمز عبور سامانه تامین اجتماعی را در متن پیام وارد نکنید.',
+    message: 'رمز سامانه را فقط در فیلد مخصوص رمز وارد کنید، نه در متن پیام.',
   });
 
 // --- Auth Schemas ---
@@ -119,7 +118,6 @@ export const changePasswordInputSchema = z
       .string({ required_error: 'رمز عبور فعلی الزامی است.' })
       .transform((v) => normalizeDigits(stripInvisibleBidiMarks(v)).trim())
       .pipe(z.string().min(1, 'رمز عبور فعلی الزامی است.')),
-
     newPassword: z
       .string({ required_error: 'رمز عبور جدید الزامی است.' })
       .transform((v) => normalizeDigits(stripInvisibleBidiMarks(v)).trim())
@@ -128,8 +126,13 @@ export const changePasswordInputSchema = z
           .string()
           .min(8, 'رمز عبور جدید باید حداقل ۸ کاراکتر باشد.')
           .max(128, 'رمز عبور جدید بیش از حد طولانی است.'),
+      )
+      .refine(
+        (v) => /[A-Za-zآ-ی]/.test(v) && /\d/.test(normalizeDigits(v)),
+        {
+          message: 'رمز عبور جدید باید ترکیبی از حروف و اعداد باشد.',
+        },
       ),
-
     confirmPassword: z
       .string({ required_error: 'تکرار رمز عبور جدید الزامی است.' })
       .transform((v) => normalizeDigits(stripInvisibleBidiMarks(v)).trim()),
@@ -143,21 +146,77 @@ export const changePasswordInputSchema = z
     message: 'رمز عبور جدید نباید با رمز عبور فعلی یکسان باشد.',
   });
 
+// Shared card/mobile selections are validated on both server and client.
+const numberOnly = (value: string) =>
+  normalizeDigits(stripInvisibleBidiMarks(value)).replace(/[\s-]/g, '');
+export const cardInputSchema = z
+  .object({
+    number: z
+      .string()
+      .transform(numberOnly)
+      .refine(isValidCardNumber, 'شماره کارت ۱۶ رقمی یا رقم کنترل آن معتبر نیست.'),
+    cvv2: z
+      .string()
+      .transform(numberOnly)
+      .refine((v) => /^\d{3,4}$/.test(v), 'CVV2 باید ۳ یا ۴ رقم باشد.'),
+    expiryMonth: z
+      .string()
+      .transform(numberOnly)
+      .refine((v) => /^(0[1-9]|1[0-2])$/.test(v), 'ماه انقضا باید از ۰۱ تا ۱۲ باشد.'),
+    expiryYear: z
+      .string()
+      .transform(numberOnly)
+      .refine((v) => /^(\d{2}|\d{4})$/.test(v), 'سال انقضا باید ۲ یا ۴ رقم باشد.'),
+    holderName: safePersianNameSchema('نام دارنده کارت'),
+  })
+  .strict();
+export const cardSelectionSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('existing'), id: z.string().uuid() }).strict(),
+  z.object({ mode: z.literal('new'), card: cardInputSchema }).strict(),
+]);
+export const mobileSelectionSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('existing'), id: z.string().uuid() }).strict(),
+  z
+    .object({
+      mode: z.literal('new'),
+      mobile: iranianMobileSchema.refine(
+        (v) => /^09(?:0[0-5]|1[0-9]|2[0-4]|3[0-9]|9[0-9])\d{7}$/.test(v),
+        'پیش‌شماره موبایل معتبر نیست.',
+      ),
+      ownerName: safePersianNameSchema('نام صاحب شماره'),
+    })
+    .strict(),
+]);
+
+// Preserve every character, including digits and whitespace, in the external portal password.
+export const portalPasswordSchema = z
+  .string({ required_error: 'رمز عبور سامانه تأمین اجتماعی الزامی است.' })
+  .min(1, 'رمز عبور سامانه تأمین اجتماعی الزامی است.')
+  .max(200, 'رمز عبور بیش از حد طولانی است.')
+  .refine((v) => v.trim().length > 0, 'رمز عبور الزامی است.');
+
 // --- Driver Request Flow Schema ---
-export const newDriverProfileInputSchema = z.object({
-  fullName: safePersianNameSchema('نام و نام خانوادگی راننده'),
-  nationalId: iranianNationalIdSchema,
-});
+export const newDriverProfileInputSchema = z
+  .object({
+    fullName: safePersianNameSchema('نام و نام خانوادگی راننده'),
+    nationalId: iranianNationalIdSchema,
+    portalPassword: portalPasswordSchema,
+  })
+  .strict();
 
 export const createDriverRequestSchema = z
   .object({
+    cardSelection: cardSelectionSchema,
+    mobileSelection: mobileSelectionSchema,
     driverMode: z.enum(['existing', 'new']),
     driverId: z.string().uuid('شناسه راننده نامعتبر است.').optional(),
+    initialPortalPassword: portalPasswordSchema.optional(),
     newDriver: newDriverProfileInputSchema.optional(),
     jalaliYear: jalaliYearSchema,
     jalaliMonth: jalaliMonthSchema,
     explanation: explanationSchema.optional().default(''),
   })
+  .strict()
   .superRefine((val, ctx) => {
     if (val.driverMode === 'existing' && !val.driverId) {
       ctx.addIssue({
@@ -176,12 +235,15 @@ export const createDriverRequestSchema = z
   });
 
 // --- Workshop Request Flow Schema ---
-export const newWorkshopProfileInputSchema = z.object({
-  workshopName: safePersianNameSchema('نام کارگاه'),
-  workshopCode: workshopCodeSchema,
-  contactFullName: safePersianNameSchema('نام کارفرما / رابط بیمه'),
-  contactNationalId: iranianNationalIdSchema,
-});
+export const newWorkshopProfileInputSchema = z
+  .object({
+    workshopName: safePersianNameSchema('نام کارگاه'),
+    workshopCode: workshopCodeSchema,
+    contactFullName: safePersianNameSchema('نام کارفرما / رابط بیمه'),
+    contactNationalId: iranianNationalIdSchema,
+    portalPassword: portalPasswordSchema,
+  })
+  .strict();
 
 export const newInsuredEmployeeInputSchema = z.object({
   fullName: safePersianNameSchema('نام و نام خانوادگی بیمه‌شده جدید'),
@@ -191,8 +253,11 @@ export const newInsuredEmployeeInputSchema = z.object({
 
 export const createWorkshopRequestSchema = z
   .object({
+    cardSelection: cardSelectionSchema,
+    mobileSelection: mobileSelectionSchema,
     workshopMode: z.enum(['existing', 'new']),
     workshopId: z.string().uuid('شناسه کارگاه نامعتبر است.').optional(),
+    initialPortalPassword: portalPasswordSchema.optional(),
     newWorkshop: newWorkshopProfileInputSchema.optional(),
     jalaliYear: jalaliYearSchema,
     jalaliMonth: jalaliMonthSchema,
@@ -280,15 +345,33 @@ export const adminAwaitingInfoSchema = z
     }
   });
 
-export const adminUpdateAmountSchema = z.object({
-  finalAmount: z
-    .union([z.number(), z.string()])
-    .transform((v) => Number(normalizeDigits(String(v).replace(/[,٬\s]/g, ''))))
-    .refine((n) => Number.isInteger(n) && n >= 0 && n <= 100_000_000_000, {
-      message: 'مبلغ نهایی باید یک عدد صحیح نامنفی معتبر باشد.',
-    }),
-  note: explanationSchema.optional().default(''),
-});
+export const paymentCardNumberSchema = z
+  .string({ required_error: 'شماره کارت واریز الزامی است.' })
+  .transform(numberOnly)
+  .refine(isValidCardNumber, 'شماره کارت واریز ۱۶ رقمی یا رقم کنترل آن معتبر نیست.');
+
+export const adminUpdateAmountSchema = z
+  .object({
+    finalAmount: z
+      .union([z.number(), z.string()])
+      .refine((v) => String(v).trim().length > 0, 'مبلغ نهایی الزامی است.')
+      .transform((v) => Number(normalizeDigits(String(v).replace(/[,٬\s]/g, ''))))
+      .refine(
+        (n) => Number.isInteger(n) && n >= 0 && n <= 100_000_000_000,
+        'مبلغ نهایی باید یک عدد صحیح نامنفی معتبر باشد.',
+      ),
+    paymentCardNumber: paymentCardNumberSchema,
+  })
+  .strict();
+
+export const paymentPreviewSchema = z
+  .object({
+    requestIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .refine((ids) => new Set(ids).size === ids.length, 'درخواست تکراری انتخاب شده است.'),
+  })
+  .strict();
 
 export const adminCancellationDecisionSchema = z.object({
   decision: z.enum(['accepted', 'rejected']),

@@ -8,6 +8,34 @@
       "when": 1792794684697,
       "tag": "0000_handy_talkback",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794848081565,
+      "tag": "0001_sloppy_red_shift",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794937964347,
+      "tag": "0002_grey_redwing",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794943779221,
+      "tag": "0003_breezy_grandmaster",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794949556788,
+      "tag": "0004_wide_newton_destine",
+      "breakpoints": true
     }
   ]
 }
