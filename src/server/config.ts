@@ -23,7 +23,8 @@ export interface AppConfig {
   maxUploadBytes: number;
   maxUploadMb: number;
   allowedUploadMimes: readonly string[];
-  antivirusMode: 'disabled' | 'clamav_command';
+  antivirusMode: 'disabled';
+  /* antivirusMode: 'disabled' | 'clamav_command'; */
   publicOfficeContact: {
     title: string;
     address: string | null;
@@ -82,7 +83,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     .map((m) => m.trim().toLowerCase())
     .filter(Boolean);
 
-  const antivirusMode = env.ANTIVIRUS_MODE === 'clamav_command' ? 'clamav_command' : 'disabled';
+  /* const antivirusMode = env.ANTIVIRUS_MODE === 'clamav_command' ? 'clamav_command' : 'disabled'; */
+
+  const rawAntivirusMode = (env.ANTIVIRUS_MODE ?? 'disabled').trim() || 'disabled';
+    if (rawAntivirusMode !== 'disabled') {
+      throw new Error(
+        'CONFIG ERROR: Antivirus scanning is not implemented. Keep ANTIVIRUS_MODE=disabled until scanner integration is added and tested.',
+      );
+    }
+  const antivirusMode: AppConfig['antivirusMode'] = 'disabled';
 
   // Production Fail-Fast Safety Checks
   if (nodeEnv === 'production') {
