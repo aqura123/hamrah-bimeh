@@ -17,26 +17,6 @@ export function NewRequestSelectionPage() {
         <Card className="p-6 flex flex-col justify-between space-y-5 hover:border-brand-blue transition-colors">
           <div className="space-y-3">
             <div className="w-12 h-12 rounded-card bg-brand-subtle text-brand-navy flex items-center justify-center">
-              <Truck className="w-6 h-6" aria-hidden="true" />
-            </div>
-            <h2 className="text-lg font-bold text-brand-navy">درخواست حق بیمه رانندگان</h2>
-            <p className="text-sm text-brand-muted leading-relaxed">
-              انتخاب یکی از رانندگان ذخیره‌شده یا معرفی راننده جدید، تعیین ماه بیمه‌ای در تقویم شمسی
-              و ارسال توضیحات یا مدارک مرتبط اختیاری.
-            </p>
-          </div>
-          <Link
-            to="/portal/requests/new/driver"
-            className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2.5 rounded-control text-sm font-semibold bg-brand-navy text-white hover:bg-brand-navy-dark"
-          >
-            <span>شروع ثبت درخواست راننده</span>
-            <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-          </Link>
-        </Card>
-
-        <Card className="p-6 flex flex-col justify-between space-y-5 hover:border-brand-blue transition-colors">
-          <div className="space-y-3">
-            <div className="w-12 h-12 rounded-card bg-brand-subtle text-brand-navy flex items-center justify-center">
               <Building2 className="w-6 h-6" aria-hidden="true" />
             </div>
             <h2 className="text-lg font-bold text-brand-navy">درخواست لیست بیمه ماهانه کارگاه</h2>
@@ -50,6 +30,26 @@ export function NewRequestSelectionPage() {
             className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2.5 rounded-control text-sm font-semibold bg-brand-navy text-white hover:bg-brand-navy-dark"
           >
             <span>شروع ثبت درخواست کارگاه</span>
+            <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+          </Link>
+        </Card>
+
+        <Card className="p-6 flex flex-col justify-between space-y-5 hover:border-brand-blue transition-colors">
+          <div className="space-y-3">
+            <div className="w-12 h-12 rounded-card bg-brand-subtle text-brand-navy flex items-center justify-center">
+              <Truck className="w-6 h-6" aria-hidden="true" />
+            </div>
+            <h2 className="text-lg font-bold text-brand-navy">درخواست حق بیمه رانندگان</h2>
+            <p className="text-sm text-brand-muted leading-relaxed">
+              انتخاب یکی از رانندگان ذخیره‌شده یا معرفی راننده جدید، تعیین ماه بیمه‌ای در تقویم شمسی
+              و ارسال توضیحات یا مدارک مرتبط اختیاری.
+            </p>
+          </div>
+          <Link
+            to="/portal/requests/new/driver"
+            className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2.5 rounded-control text-sm font-semibold bg-brand-navy text-white hover:bg-brand-navy-dark"
+          >
+            <span>شروع ثبت درخواست راننده</span>
             <ArrowLeft className="w-4 h-4" aria-hidden="true" />
           </Link>
         </Card>
