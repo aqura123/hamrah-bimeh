@@ -216,7 +216,7 @@ export function CustomerPortalPage() {
                         <span className="ltr-code font-semibold text-brand-text">
                           {toPersianDigits(ws.workshopCode)}
                         </span>{' '}
-                        · رابط: {ws.contactFullName}
+                        · کارفرما: {ws.contactFullName}
                       </p>
                     </div>
                     <Link
@@ -277,6 +277,10 @@ export function CustomerPortalPage() {
                                 {reqItem.awaitingCustomerInfo && (
                                   <AwaitingInfoBadge primaryStatus={reqItem.status} />
                                 )}
+                                <ExternalLink
+                                  className="w-3.5 h-3.5 text-brand-muted"
+                                  aria-hidden="true"
+                                />
                               </div>
                             </Link>
                           </li>
@@ -404,8 +408,7 @@ export function CustomerPortalPage() {
                                   {formatJalaliDate(
                                     reqItem.submittedAt,
                                     publicConfig.businessTimezone,
-                                  )}{' '}
-                                  · کد: <span className="ltr-code">{reqItem.referenceCode}</span>
+                                  )}
                                   {reqItem.finalAmount !== null && (
                                     <>
                                       {' '}
