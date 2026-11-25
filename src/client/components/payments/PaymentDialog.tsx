@@ -120,7 +120,7 @@ export function PaymentDialog({ onClose }: { onClose: () => void }) {
     `${REQUEST_TYPE_LABELS[item.requestType]} — ${item.driverName ?? item.workshopName ?? 'پرونده'} — ${formatJalaliPeriod(item.jalaliYear, item.jalaliMonth)}`;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-brand-navy-dark/60"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-brand-navy-dark/50 backdrop-blur-[1px]"
       onClick={onClose}
     >
       <div
