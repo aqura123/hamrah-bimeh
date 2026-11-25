@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { SecondaryButton } from '../ui/Primitives';
 
 /** Copy synchronously in the click gesture, without requesting Clipboard API permission. */
-export function CopyableCredentialRow({ label, value }: { label: string; value?: string }) {
+export function CopyableCredentialRow({ label, value, hideLabel = false, copyButtonText }: { label: string; value?: string; hideLabel?: boolean; copyButtonText?: string }) {
   const valueRef = useRef<HTMLDivElement>(null);
   const [message, setMessage] = useState('');
 
@@ -51,7 +51,7 @@ export function CopyableCredentialRow({ label, value }: { label: string; value?:
     <div className="border rounded-control p-3 space-y-1">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-xs text-brand-muted">{label}</div>
+          {!hideLabel && <div className="text-xs text-brand-muted">{label}</div>}
           <div
             ref={valueRef}
             dir="ltr"
@@ -61,7 +61,7 @@ export function CopyableCredentialRow({ label, value }: { label: string; value?:
           </div>
         </div>
         <SecondaryButton type="button" disabled={!value} onClick={copy}>
-          کپی {label}
+          {copyButtonText ?? `کپی ${label}`}
         </SecondaryButton>
       </div>
       {message && (
