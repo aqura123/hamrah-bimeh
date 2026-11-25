@@ -209,23 +209,23 @@ export function PaymentDialog({ onClose }: { onClose: () => void }) {
           </>
         ) : (
           <>
-            <Alert variant="warning">
+            {/* <Alert variant="warning">
               این صفحه فقط راهنمای واریز است؛ پرداخت آنلاین یا تأیید واریز انجام نمی‌شود. پیش از
               واریز، مبلغ و شماره کارت را با دفتر بررسی کنید.
-            </Alert>
+            </Alert> */}
             {receipt.groups.map((group, index) => (
               <section
                 key={group.cardNumber}
                 className="border border-brand-border rounded-control p-4 space-y-3 bg-brand-subtle/30"
               >
-                <h3 className="font-bold">گروه واریز {index + 1}</h3>
+                <h3 className="font-bold">رسید واریز {index + 1}</h3>
                 {group.items.map((item) => (
                   <div
                     key={item.id}
                     className="flex flex-wrap justify-between gap-2 text-sm border-b border-brand-border pb-2"
                   >
                     <span>
-                      {label(item)} <span dir="ltr">({item.referenceCode})</span>
+                      {label(item)}
                     </span>
                     <strong>{formatMoney(item.finalAmount, item.currencyUnit)}</strong>
                   </div>
@@ -251,12 +251,14 @@ export function PaymentDialog({ onClose }: { onClose: () => void }) {
               {receipt.groups.map((group, index) => (
                 <div key={group.cardNumber}>
                   <p className="text-sm text-brand-muted">
-                    گروه واریز {index + 1} —{' '}
+                    شماره کارت رسید واریز {index + 1} —{' '}
                     {group.totals.map((t) => formatMoney(t.amount, t.currencyUnit)).join('، ')}
                   </p>
                   <CopyableCredentialRow
-                    label={`شماره کارت گروه ${index + 1}`}
+                    label="شماره کارت"
                     value={group.cardNumber}
+                    hideLabel
+                    copyButtonText="کپی شماره کارت"
                   />
                 </div>
               ))}
